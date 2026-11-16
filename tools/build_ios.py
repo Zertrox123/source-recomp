@@ -116,7 +116,7 @@ def main():
     app = games.ios_app(game, args.target)
     app.mkdir(parents=True, exist_ok=True)
     response = ios_dir / 'link.rsp'
-    response.write_text('\n'.join(str(o) for o in objects) + '\n')
+    build_game.write_link_response(response, objects)
     libs = [str(deps / 'lib' / n) for n in ('libSDL2main.a', 'libSDL2.a', 'libgl4es.a', 'libfreetype.a')]
     frameworks = FRAMEWORKS + (D3D9METAL_FRAMEWORKS if d3d9metal else [])
     link = ['clang', *base, f'@{response}', *libs, *([str(d3d9metal)] if d3d9metal else []), '-liconv',

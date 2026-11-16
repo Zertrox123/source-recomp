@@ -192,6 +192,14 @@ class SourceIndex:
         self.path.write_text(json.dumps(self.known))
 
 
+def write_link_response(response, objects):
+    """Writes clang's @response file: one object per line, each quoted, since
+    the paths are absolute and the build folder may contain spaces (the
+    installer builds in ~/Library/Application Support/...)."""
+    quote = lambda o: '"' + str(o).replace('\\', '\\\\').replace('"', '\\"') + '"'
+    response.write_text(''.join(quote(o) + '\n' for o in objects))
+
+
 def compile_units(units, cache, jobs, compiler_identity):
     """units: [(source, flags)] -> ([object], compiled count, cpu seconds)."""
     cache.mkdir(parents=True, exist_ok=True)
@@ -348,7 +356,7 @@ def main():
     link_started = time.time()
     response = build_dir / 'link.rsp'
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    response.write_text('\n'.join(str(o) for o in objects) + '\n')
+    write_link_response(response, objects)
     temporary = args.out.with_name(f'.{args.out.name}.tmp')
     link_flags = (['-fprofile-instr-generate'] if args.pgo_generate else []) + \
         ([f'-Wl,-order_file,{args.order_file}'] if args.order_file else [])

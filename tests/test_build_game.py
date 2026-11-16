@@ -65,6 +65,27 @@ class DispatchTableTests(unittest.TestCase):
         self.assertEqual(lift.module_boundaries(module), {0x10000010, 0x10000030, 0x10000040, 0x10000050})
 
 
+class LinkResponseTests(unittest.TestCase):
+    def test_objects_in_a_folder_with_spaces_link(self):
+        # The installer builds in ~/Library/Application Support/...: clang
+        # splits unquoted response file lines at spaces.
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / 'Application Support' / 'a "quoted" dir'
+            folder.mkdir(parents=True)
+            sources = {'main.c': 'int f(void); int main(void) { return f(); }',
+                       'f.c': 'int f(void) { return 0; }'}
+            objects = []
+            for name, text in sources.items():
+                (folder / name).write_text(text)
+                objects.append(folder / (name + '.o'))
+                subprocess.run(['clang', '-c', str(folder / name), '-o', str(objects[-1])], check=True)
+            response = folder / 'link.rsp'
+            build_game.write_link_response(response, objects)
+            subprocess.run(['clang', f'@{response}', '-o', str(folder / 'a.out')], check=True,
+                           capture_output=True)
+            self.assertEqual(subprocess.run([str(folder / 'a.out')]).returncode, 0)
+
+
 class CompileCacheTests(unittest.TestCase):
     def test_unchanged_sources_are_not_recompiled_and_headers_count(self):
         with tempfile.TemporaryDirectory() as tmp:
