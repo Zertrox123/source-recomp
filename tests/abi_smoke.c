@@ -1,16 +1,22 @@
 #include "rt.h"
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "cpu_checks.h"
 #include "vm_checks.h"
 #include "filesystem_checks.h"
 #include "thread_checks.h"
 #include "checks.h"
 
-static struct { const char *name; rt_check_fn fn; } checks[256];
-static size_t check_count;
+// Grows on demand: a fixed size broke make check once the checks passed it.
+static struct check_entry { const char *name; rt_check_fn fn; } *checks;
+static size_t check_count, check_cap;
 void rt_register_check(const char *name, rt_check_fn fn) {
-    assert(check_count < sizeof(checks) / sizeof(*checks));
+    if (check_count == check_cap) {
+        check_cap = check_cap ? check_cap * 2 : 256;
+        checks = realloc(checks, check_cap * sizeof(*checks));
+        assert(checks);
+    }
     checks[check_count].name = name; checks[check_count++].fn = fn;
 }
 
