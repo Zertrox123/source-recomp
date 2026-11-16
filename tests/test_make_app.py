@@ -122,6 +122,14 @@ class MakeAppTests(unittest.TestCase):
         with (app / 'Contents/Info.plist').open('rb') as f:
             self.assertEqual(plistlib.load(f)['CFBundleIdentifier'], 'fr.kanapitsas.portal2-native')
 
+    def test_default_args_use_relative_mouse(self):
+        # Issue #38: without raw input the game warps the visible system cursor
+        # every frame and macOS "shake to locate" enlarges it.
+        for game in ('portal2', 'hl2'):
+            with self.subTest(game=game):
+                args = make_app.default_args(make_app.games.GAMES[game])
+                self.assertEqual(args[args.index('+m_rawinput') + 1], '1')
+
     def test_hl2_gets_its_own_app_and_data_folder(self):
         # Portal 2's old saves location must not leak into Half-Life 2's folder. Older
         # single-game format: "game": "hl2" and its keys at the top level.

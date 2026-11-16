@@ -250,7 +250,10 @@ def default_args(game):
     """Game arguments of the app when make_app.py is given none."""
     # Sans -w/-h/-windowed : résolution et mode choisis dans le menu Vidéo du jeu
     # (enregistrés dans update/cfg/video.txt) ; Retina selon la résolution.
-    return ['-game', game['mod'], '-novid']
+    # +m_rawinput 1 : souris relative SDL, curseur système figé. Sinon le jeu
+    # recentre le curseur à chaque image et macOS l'agrandit (« secouer pour
+    # localiser », issue #38).
+    return ['-game', game['mod'], '-novid', '+m_rawinput', '1']
 
 
 def build_app(app, binary, prep, config, paths, game_args):
