@@ -83,6 +83,22 @@ RT_CHECK(sdl_video_displays_and_strings) {
     stop_video();
 }
 
+// Issue #38 : pas de menu d'accents quand une touche reste enfoncée, sans
+// écraser un choix du joueur dans l'environnement.
+RT_CHECK(sdl_video_disables_mac_press_and_hold) {
+    char *saved = getenv("SDL_MAC_PRESS_AND_HOLD") ? strdup(getenv("SDL_MAC_PRESS_AND_HOLD")) : NULL;
+    unsetenv("SDL_MAC_PRESS_AND_HOLD");
+    start_dummy_video();
+    assert(getenv("SDL_MAC_PRESS_AND_HOLD") && !strcmp(getenv("SDL_MAC_PRESS_AND_HOLD"), "0"));
+    stop_video();
+    setenv("SDL_MAC_PRESS_AND_HOLD", "1", 1);
+    start_dummy_video();
+    assert(!strcmp(getenv("SDL_MAC_PRESS_AND_HOLD"), "1"));
+    stop_video();
+    if (saved) { setenv("SDL_MAC_PRESS_AND_HOLD", saved, 1); free(saved); }
+    else unsetenv("SDL_MAC_PRESS_AND_HOLD");
+}
+
 RT_CHECK(sdl_video_window_lifecycle) {
     int dummy = start_dummy_video();
     uint32_t window = call("SDL_CreateWindow", 6, put_string(DATA, "Portal 2"), SDL_WINDOWPOS_UNDEFINED,
