@@ -642,6 +642,12 @@ static int sdl_video(CPU *c, const char *name) {
     if (!strcmp(n, "Init") || !strcmp(n, "InitSubSystem")) {
         uint32_t flags = rt_arg32(c, 0);
         if (flags & SDL_INIT_VIDEO) require_main_thread(c, "SDL video must be initialized on the macOS main thread");
+#if !TARGET_OS_IPHONE
+        // Touche maintenue : répétition, pas le menu d'accents de macOS (issue #38).
+        // Lu par SDL3 avant l'enregistrement de NSApp ; une valeur déjà posée par
+        // le joueur dans l'environnement est gardée.
+        if (flags & SDL_INIT_VIDEO) setenv("SDL_MAC_PRESS_AND_HOLD", "0", 0);
+#endif
         r = (uint32_t)(!strcmp(n, "Init") ? SDL_Init(flags) : SDL_InitSubSystem(flags));
     } else if (!strcmp(n, "QuitSubSystem")) SDL_QuitSubSystem(rt_arg32(c, 0));
     else if (!strcmp(n, "WasInit")) r = SDL_WasInit(rt_arg32(c, 0));
