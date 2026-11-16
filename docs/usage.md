@@ -267,6 +267,7 @@ Rows marked *OpenGL* do nothing on Metal.
 | `P2_FPS=1` | host frame counter visible from the start (F3 toggles it) |
 | `P2_HIDDEN_WINDOWS=1` | hidden window, vsync off (what `run_game.py` does without `--show`) |
 | `P2_FAKE_FOCUS=1` | with a hidden window, tells the game once that it has focus |
+| `P2_SYS_ERROR_CRASH=1` | do not add `-nominidumps`: a fatal engine error (`Sys_Error`) crashes on guest address 0 as on Linux, with the guest backtrace, instead of exiting with status 100 |
 | `P2_RETINA=0` | screen reported in points instead of pixels |
 | `P2_RENDERER=opengl` / `d3d9` (or `gl` / `metal`) | force OpenGL, or make a missing Metal library an explicit message |
 | `P2_D3D9METAL=<dylib>` | the Metal library to load (the app uses its bundled copy) |

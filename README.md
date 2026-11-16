@@ -272,8 +272,9 @@ Details, manual setup and measurements: [docs/hl2.md](docs/hl2.md).
   Steam folder. An empty user override can also mask the original; the
   launch error names the effective file. This check detects missing or empty
   data, not every possible malformed or modded file.
-- **"Steam is not running"**: the engine exits without a logged-in Steam
-  client. Open Steam first (the app tries to start it).
+- **"Steam is not running"**: the engine exits (status 100) without a
+  logged-in Steam client; the log shows `steam: the Steam client is not
+  running`. Open Steam first (the app tries to start it).
 - **"Failed to create D3D9!"**: `-vulkan` was passed but `libd3d9metal` is
   missing or failed to initialize. Drop `-vulkan` or set `P2_RENDERER=opengl`.
 - **No music or voices**: `setup.sh` warns when `bin/linux32/mssmp3.asi`,

@@ -19,6 +19,22 @@
 #include <unistd.h>
 
 
+// Sys_Error du moteur Linux (sys_dll) : « Linux doesn't have minidump stuff,
+// so crash on purpose », *(int *)0 = 0xdeadbeef, sauf avec -nominidumps où il
+// sort par Plat_ExitProcess(100). Ce portage n'écrit pas de minidump (breakpad
+// reste désactivé, steam.c) : l'écriture volontaire ne donnait qu'un faux
+// SIGBUS sur l'adresse invitée 0 (Steam absent : Error("Steam is not
+// running...") au chargement de la DLL serveur). Argument ajouté par
+// src/main.c, sauf si déjà donné ou si P2_SYS_ERROR_CRASH=1 (garder la faute
+// et sa pile invitée pour diagnostiquer une autre erreur fatale) ; NULL sinon.
+const char *rt_minidump_argument(int count, char *const *args) {
+    const char *crash = getenv("P2_SYS_ERROR_CRASH");
+    if (crash && *crash && strcmp(crash, "0")) return NULL;
+    for (int i = 0; i < count; ++i)
+        if (!strcmp(args[i], "-nominidumps")) return NULL;
+    return "-nominidumps";
+}
+
 // Signaux Linux i386 (asm/signal.h) et leurs équivalents Darwin.
 static const struct { int linux_value, darwin; } signal_table[] = {
     {1, SIGHUP}, {2, SIGINT}, {3, SIGQUIT}, {4, SIGILL}, {5, SIGTRAP}, {6, SIGABRT},

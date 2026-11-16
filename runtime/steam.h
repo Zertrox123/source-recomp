@@ -41,6 +41,7 @@ int steam_dylib_available(void);
 uint32_t steam_vtable(CPU *c, const char *version);
 void *steam_proxy_host(uint32_t proxy);
 void steam_pop_hidden_pointer(CPU *c);
+const char *steam_init_failure_note(int steam_running);   // message d'un SteamAPI_Init client en échec
 void steam_mask_ids(char *text, size_t length);   // masque les SteamID64 d'un texte
 void steam_test_warning_hook(uint32_t guest_fn, int severity, const char *text);
 void steam_deliver_warnings(CPU *c);   // file des avertissements des threads Steam
