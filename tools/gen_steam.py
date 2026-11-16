@@ -63,8 +63,10 @@ SOURCES = [
 SCALARS = {'int': ('int32_t', 4), 'uint': ('uint32_t', 4), 'short': ('int16_t', 4), 'ushort': ('uint16_t', 4),
            'byte': ('uint8_t', 4), 'sbyte': ('int8_t', 4), 'bool': ('bool', 4), 'long': ('int64_t', 8),
            'ulong': ('uint64_t', 8), 'float': ('float', 4), 'double': ('double', 8)}
-# Structures sans pointeur, pack(4) sur Linux comme sur macOS (Packsize.cs) : même disposition.
-PLAIN_STRUCTS = {'FriendGameInfo_t': 24, 'LeaderboardEntry_t': 28}
+# Structures sans pointeur, pack(4) sur Linux comme sur macOS (Packsize.cs) : même disposition,
+# recopiées telles quelles. Leur taille est calculée par SDK (struct_sizes) : SteamUGCDetails_t
+# gagne m_ulTotalFilesSize en 1.60 (9764 -> 9772 octets).
+PLAIN_STRUCTS = ('FriendGameInfo_t', 'LeaderboardEntry_t', 'SteamUGCDetails_t')
 # Tableaux de taille fixe documentée (STEAM_INPUT_MAX_COUNT, _MAX_ACTIVE_LAYERS, _MAX_ORIGINS).
 FIXED_ARRAYS = {'GetConnectedControllers': 16, 'GetActiveActionSetLayers': 16,
                 'GetDigitalActionOrigins': 8, 'GetAnalogActionOrigins': 8}
@@ -124,6 +126,36 @@ def typedefs(files):
     enums = files['Assets/com.rlabrecque.steamworks.net/Runtime/autogen/SteamEnums.cs'].read_text()
     for name, base in re.findall(r'public enum (\w+) : (\w+)', enums):
         result[name] = base
+    return result
+
+
+def struct_sizes(files, types):
+    """PLAIN_STRUCTS -> taille i386/arm64 en pack(4), d'après SteamStructs.cs du paquet."""
+    root = 'Assets/com.rlabrecque.steamworks.net/Runtime/autogen/'
+    constants = dict((k, eval(v, {})) for k, v in re.findall(
+        r'public const int (\w+) = ([\d +\-*]+);', files[root + 'SteamConstants.cs'].read_text()))
+    text = files[root + 'SteamStructs.cs'].read_text()
+    result = {}
+    for struct in PLAIN_STRUCTS:
+        body = re.search(r'public struct ' + struct + r' \{(.*?)\n\t\}', text, re.S)
+        if not body:
+            continue
+        size = 0
+        for decl in re.finditer(r'(?:\[MarshalAs\(UnmanagedType\.(\w+)(?:, SizeConst = Constants\.(\w+))?\)\]\s*)?'
+                                r'(?:public|private) ([\w\[\]]+) (m_\w+);', body.group(1)):
+            marshal, count, kind, name = decl.groups()
+            if kind == 'byte[]' and marshal == 'ByValArray':
+                width, align = constants[count], 1
+            elif kind in ('CSteamID', 'CGameID'):
+                width = align = 8
+            elif SCALARS.get(types.get(kind, kind)):
+                width = natural_size(SCALARS[types.get(kind, kind)])
+                align = width
+            else:
+                raise SystemExit(f'{struct}.{name} : type {kind} non géré')
+            align = min(align, 4)
+            size = (size + align - 1) // align * align + width
+        result[struct] = (size + 3) // 4 * 4
     return result
 
 
@@ -187,7 +219,7 @@ class Unsupported(Exception):
     pass
 
 
-def plan_method(flat, method, ret, params, wrapper, types, gprs, slot):
+def plan_method(flat, method, ret, params, wrapper, types, gprs, slot, structs=None):
     """Return (C body, sret); raise Unsupported with the reason."""
     def scalar(t):
         t = types.get(t, t)
@@ -230,8 +262,8 @@ def plan_method(flat, method, ret, params, wrapper, types, gprs, slot):
                 size = natural_size(scalar(inner))
             elif inner in ('CSteamID', 'CGameID'):
                 size = 8
-            elif inner in PLAIN_STRUCTS:
-                size = PLAIN_STRUCTS[inner]
+            elif inner in (structs or {}):
+                size = structs[inner]
             else:
                 raise Unsupported(f'paramètre {kind} {name}')
             lines.append(f'void *{var} = steam_out(c, R32({at}), {size}u);'); proto.append('void *'); offset += 4
@@ -301,6 +333,7 @@ def generate(sources):
 def generate_source(pkg, dylib, versions, methods, interfaces, stats, direct):
     files = sdk_files(pkg)
     types = typedefs(files)
+    structs = struct_sizes(files, types)
     slots, symbols = disassemble(dylib)
     natives = native_methods(files)
     wrappers = wrapper_returns(files)
@@ -335,7 +368,7 @@ def generate_source(pkg, dylib, versions, methods, interfaces, stats, direct):
                 if flat not in natives:
                     raise Unsupported('signature absente de Steamworks.NET')
                 ret, params = natives[flat]
-                entry['body'], entry['sret'] = plan_method(flat, method, ret, params, wrappers.get(flat), types, gprs, slot if direct else None)
+                entry['body'], entry['sret'] = plan_method(flat, method, ret, params, wrappers.get(flat), types, gprs, slot if direct else None, structs)
             except Unsupported as exc:
                 entry['why'] = str(exc)
             methods.append(entry)
