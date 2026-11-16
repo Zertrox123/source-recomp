@@ -687,6 +687,7 @@ static int sdl_video(CPU *c, const char *name) {
     } else if (!strcmp(n, "DestroyWindow")) {
         SDL_Window *w = WINDOW(0);
         if (w) { rt_handle_free(rt_arg32(c, 0), RT_SDL_WINDOW); destroy_metal_view(w); }
+        rt_mouse_forget_window(w);   // native_plugin.c ne garde pas de fenêtre détruite
         SDL_DestroyWindow(w);
     }
     else if (!strcmp(n, "ShowWindow")) { SDL_Window *w = WINDOW(0); if (!hidden_windows()) SDL_ShowWindow(w); }

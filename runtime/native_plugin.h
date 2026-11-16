@@ -16,7 +16,8 @@
 //
 // This header is the whole contract, plain C, versioned by
 // RT_PLUGIN_HOST_VERSION (a plugin refuses a host older than the one it was
-// built for). A plugin keeps a copy of it.
+// built for). A plugin keeps a copy of it. Loading, lifetime, hooks and
+// platforms: docs/native-plugins.md. Mac only: the loader is compiled out on iOS.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
@@ -71,7 +72,8 @@ typedef struct RtPluginHost {
     // An exported symbol of a recompiled module ("client.so", "CreateInterface"); 0 if none.
     uint32_t (*module_symbol)(const char *module, const char *symbol);
 
-    // --- hooks (one per plugin; NULL removes it) ---
+    // --- hooks (one per plugin; NULL removes it; any thread: the hook and
+    // `user` are replaced together) ---
     // Right before IDirect3DDevice9::Present on the Metal renderer, with the
     // native device (an arm64 IDirect3DDevice9*), on the presenting thread.
     void (*set_present_hook)(RtPlugin *plugin, void (*hook)(void *device, void *user), void *user);

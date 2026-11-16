@@ -184,8 +184,8 @@ static void open_module(CPU *c, uint32_t path, uint32_t mode) {
     size_t index = module ? (size_t)(module - rt_modules) : 0;
     if (!module) {
         uint32_t handle;   // a Mach-O image in place of a Linux module (native_plugin.c)
-        if (rt_native_plugin_open(GPTR(path), &handle)) {
-            if (!handle) loader_error("native plugin failed to load", GPTR(path));
+        if (rt_native_plugin_open(GPTR(path), mode, &handle)) {
+            if (!handle && !(mode & 4)) loader_error("native plugin failed to load", GPTR(path));
             c->eax = handle;
             return;
         }
@@ -293,7 +293,10 @@ int rt_loader_shim(CPU *c, const char *name) {
         size_t index;
         if (handle == PROGRAM_HANDLE) { c->eax = 0; return 1; }
         int closed;
-        if (rt_native_plugin_close(handle, &closed)) { c->eax = (uint32_t)closed; return 1; }
+        if (rt_native_plugin_close(handle, &closed)) {
+            if (closed) loader_error("dlclose", "shared object not open");
+            c->eax = (uint32_t)closed; return 1;
+        }
         if (ensure_tables() || !handle_module(handle, &index) || !opens[index]) {
             loader_error("dlclose", "shared object not open"); c->eax = UINT32_MAX; return 1;
         }

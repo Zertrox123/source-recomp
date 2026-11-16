@@ -5,11 +5,15 @@
 //
 // Handles returned to the guest's dlopen are 0xcd000000 + 0x100 * index,
 // outside the recompiled modules' range (modules.c). A plugin is never
-// unloaded: dlclose only counts down, as for the recompiled modules.
+// unloaded: dlclose only counts down, as for the recompiled modules. A plugin
+// whose rt_native_plugin_init refused stays loaded too (its init may have
+// defined functions that point into it) but is never handed out: every later
+// dlopen of its path returns 0.
 #include "rt.h"
 #include "modules.h"
 #include "native_plugin.h"
 #include <SDL2/SDL.h>
+#include <TargetConditionals.h>
 #include <dlfcn.h>
 #include <limits.h>
 #include <pthread.h>
@@ -25,20 +29,25 @@
 #define PREFIX "rtplugin:"
 
 typedef struct { char *name; uint32_t address; } Export;
-typedef void (*DeviceHook)(void *device, void *user);
+// A hook and its `user` are published together: the slot points to an
+// immutable pair, swapped atomically. A replaced pair is never freed (the
+// render thread may still be reading it); hooks are set a handful of times.
+typedef struct { void (*device)(void *device, void *user); void (*events)(void *user); void *user; } Hook;
+enum { HOOK_PRESENT, HOOK_RESET, HOOK_EVENTS, HOOK_KINDS };
 struct RtPlugin {
     char path[PATH_MAX];
     void *library;
+    int refused;   // init returned non-zero: dlopen of this path returns 0
     Export *exports;
     size_t export_count;
     uint32_t opens;
-    DeviceHook present, reset;
-    void *present_user, *reset_user;
-    void (*events)(void *user);
-    void *events_user;
+    Hook *hooks[HOOK_KINDS];
 };
 static RtPlugin plugins[MAX_PLUGINS];
+// Read on the render thread (Present hooks) while the main thread loads a
+// plugin: an entry is filled in before the count that publishes it.
 static size_t plugin_count;
+static size_t loaded_plugins(void) { return __atomic_load_n(&plugin_count, __ATOMIC_ACQUIRE); }
 
 typedef struct Defined { char *name; RtPluginFn fn; void *data; struct Defined *next; } Defined;
 static Defined *defined;
@@ -157,38 +166,39 @@ static uint32_t host_module_symbol(const char *module, const char *symbol) {
 }
 
 // ---------------------------------------------------------------- hooks
+static void set_hook(RtPlugin *plugin, int kind, Hook value) {
+    Hook *pair = NULL;
+    if (value.device || value.events) {
+        pair = malloc(sizeof(*pair));
+        if (!pair) return;
+        *pair = value;
+    }
+    __atomic_store_n(&plugin->hooks[kind], pair, __ATOMIC_RELEASE);
+}
+static const Hook *hook_of(size_t index, int kind) {
+    return __atomic_load_n(&plugins[index].hooks[kind], __ATOMIC_ACQUIRE);
+}
 static void host_set_present_hook(RtPlugin *plugin, void (*hook)(void *, void *), void *user) {
-    if (!plugin) return;
-    plugin->present_user = user;
-    __atomic_store_n(&plugin->present, hook, __ATOMIC_RELEASE);
+    if (plugin) set_hook(plugin, HOOK_PRESENT, (Hook){.device = hook, .user = user});
 }
 static void host_set_reset_hook(RtPlugin *plugin, void (*hook)(void *, void *), void *user) {
-    if (!plugin) return;
-    plugin->reset_user = user;
-    __atomic_store_n(&plugin->reset, hook, __ATOMIC_RELEASE);
+    if (plugin) set_hook(plugin, HOOK_RESET, (Hook){.device = hook, .user = user});
 }
-void rt_native_plugins_present(void *device) {
-    for (size_t i = 0; i < plugin_count; ++i) {
-        DeviceHook hook = __atomic_load_n(&plugins[i].present, __ATOMIC_ACQUIRE);
-        if (hook) hook(device, plugins[i].present_user);
-    }
-}
-void rt_native_plugins_reset(void *device) {
-    for (size_t i = 0; i < plugin_count; ++i) {
-        DeviceHook hook = __atomic_load_n(&plugins[i].reset, __ATOMIC_ACQUIRE);
-        if (hook) hook(device, plugins[i].reset_user);
-    }
-}
-
 static void host_set_events_hook(RtPlugin *plugin, void (*hook)(void *), void *user) {
-    if (!plugin) return;
-    plugin->events_user = user;
-    __atomic_store_n(&plugin->events, hook, __ATOMIC_RELEASE);
+    if (plugin) set_hook(plugin, HOOK_EVENTS, (Hook){.events = hook, .user = user});
 }
+static void device_hooks(int kind, void *device) {
+    for (size_t i = 0, n = loaded_plugins(); i < n; ++i) {
+        const Hook *hook = hook_of(i, kind);
+        if (hook) hook->device(device, hook->user);
+    }
+}
+void rt_native_plugins_present(void *device) { device_hooks(HOOK_PRESENT, device); }
+void rt_native_plugins_reset(void *device) { device_hooks(HOOK_RESET, device); }
 void rt_native_plugins_events(void) {
-    for (size_t i = 0; i < plugin_count; ++i) {
-        void (*hook)(void *) = __atomic_load_n(&plugins[i].events, __ATOMIC_ACQUIRE);
-        if (hook) hook(plugins[i].events_user);
+    for (size_t i = 0, n = loaded_plugins(); i < n; ++i) {
+        const Hook *hook = hook_of(i, HOOK_EVENTS);
+        if (hook) hook->events(hook->user);
     }
 }
 
@@ -200,6 +210,7 @@ int rt_mouse_released(void) { return mouse_released; }
 void rt_mouse_note_relative(int on) { wanted_relative = on; }
 void rt_mouse_note_grab(void *window, int on) { grab_window = window; wanted_grab = on; }
 void rt_mouse_note_cursor(int shown) { wanted_cursor = shown; }
+void rt_mouse_forget_window(void *window) { if (window && window == grab_window) grab_window = NULL; }
 static void host_release_mouse(int released) {
     released = !!released;
     if (released == mouse_released) return;
@@ -237,6 +248,14 @@ static RtPluginHost host = {
 };
 
 // ---------------------------------------------------------------- loader (modules.c)
+#if TARGET_OS_IPHONE
+// iOS loads only code signed with the app: a dylib among the game's data
+// would be refused anyway. Native plugins are a Mac feature.
+int rt_native_plugin_open(const char *guest_path, uint32_t mode, uint32_t *handle) {
+    (void)guest_path; (void)mode; (void)handle; (void)host;
+    return 0;
+}
+#else
 static int is_macho(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return 0;
@@ -246,20 +265,31 @@ static int is_macho(const char *path) {
     return n == 4 && (magic == 0xfeedfacfu || magic == 0xbebafecau || magic == 0xcafebabeu);
 }
 
+static uint32_t handle_of(const RtPlugin *plugin) {
+    return PLUGIN_HANDLE_BASE + PLUGIN_HANDLE_STRIDE * (uint32_t)(plugin - plugins);
+}
+
 // dlopen of `guest_path`: 1 if it is a native plugin (*handle set, 0 if it
-// failed to load), 0 if not one (the caller reports a missing module).
-int rt_native_plugin_open(const char *guest_path, uint32_t *handle) {
+// failed to load or, with RTLD_NOLOAD, is not loaded yet), 0 if not one (the
+// caller reports a missing module). Called with the guest lock held.
+int rt_native_plugin_open(const char *guest_path, uint32_t mode, uint32_t *handle) {
     const char *host_path = rt_read_path(guest_path);
-    if (!host_path || access(host_path, R_OK) || !is_macho(host_path)) return 0;
+    if (!host_path) return 0;
     char real[PATH_MAX];
     if (!realpath(host_path, real)) snprintf(real, sizeof(real), "%s", host_path);
-    *handle = 0;
-    for (size_t i = 0; i < plugin_count; ++i)
-        if (!strcmp(plugins[i].path, real)) {
+    // A plugin already in the table first: it stays loaded even if its file
+    // is removed or replaced since.
+    for (size_t i = 0, n = loaded_plugins(); i < n; ++i)
+        if (!strcmp(plugins[i].path, real) || !strcmp(plugins[i].path, host_path)) {
+            *handle = 0;
+            if (plugins[i].refused) return 1;   // refused once: never initialised again
             ++plugins[i].opens;
-            *handle = PLUGIN_HANDLE_BASE + PLUGIN_HANDLE_STRIDE * (uint32_t)i;
+            *handle = handle_of(&plugins[i]);
             return 1;
         }
+    if (access(host_path, R_OK) || !is_macho(host_path)) return 0;
+    *handle = 0;
+    if (mode & 4) return 1;   // RTLD_NOLOAD: not loaded, and nothing runs
     if (plugin_count == MAX_PLUGINS) { fprintf(stderr, "native plugin %s: too many plugins\n", real); return 1; }
     host.memory = M;   // set before any guest code runs
     void *library = dlopen(real, RTLD_NOW | RTLD_LOCAL);
@@ -274,24 +304,24 @@ int rt_native_plugin_open(const char *guest_path, uint32_t *handle) {
     memset(plugin, 0, sizeof(*plugin));
     snprintf(plugin->path, sizeof(plugin->path), "%s", real);
     plugin->library = library;
-    ++plugin_count;   // before init: it may set hooks and exports
+    __atomic_store_n(&plugin_count, plugin_count + 1, __ATOMIC_RELEASE);   // before init: it may set hooks and exports
     if (init(&host, plugin)) {
         fprintf(stderr, "native plugin %s: initialisation refused\n", real);
-        plugin->library = NULL;   // stays in the table (hooks cleared), never handed out
-        plugin->present = plugin->reset = NULL;
-        plugin->events = NULL;
+        plugin->refused = 1;   // stays loaded (see the top of this file), hooks cleared
+        for (int kind = 0; kind < HOOK_KINDS; ++kind) set_hook(plugin, kind, (Hook){0});
         return 1;
     }
     plugin->opens = 1;
     fprintf(stderr, "native plugin %s loaded\n", real);
-    *handle = PLUGIN_HANDLE_BASE + PLUGIN_HANDLE_STRIDE * (uint32_t)(plugin - plugins);
+    *handle = handle_of(plugin);
     return 1;
 }
+#endif
 
 static RtPlugin *plugin_of(uint32_t handle) {
     if (handle < PLUGIN_HANDLE_BASE || (handle - PLUGIN_HANDLE_BASE) % PLUGIN_HANDLE_STRIDE) return NULL;
     size_t index = (handle - PLUGIN_HANDLE_BASE) / PLUGIN_HANDLE_STRIDE;
-    return index < plugin_count && plugins[index].library ? &plugins[index] : NULL;
+    return index < loaded_plugins() && !plugins[index].refused ? &plugins[index] : NULL;
 }
 
 // dlsym on a plugin handle: 1 if `handle` is one (*address 0 when the symbol is unknown).

@@ -78,7 +78,16 @@ build/pe-fixture.c: tests/generate_pe_fixture.py tests/pe_fixture.py tests/pe_pl
 	@mkdir -p build
 	$(PYTHON) tests/generate_pe_fixture.py $@
 
-build/abi-smoke: $(ABI_OBJECTS)
+# Native plugins loaded by tests/checks_native_plugin.c (dlopen at run time, not linked).
+PLUGIN_FIXTURES := build/native-plugin-ok.dylib build/native-plugin-refuse.dylib
+build/native-plugin-ok.dylib: tests/native_plugin_fixture.c runtime/native_plugin.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) -Iruntime -dynamiclib $< -o $@
+build/native-plugin-refuse.dylib: tests/native_plugin_fixture.c runtime/native_plugin.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) -Iruntime -DREFUSE -dynamiclib $< -o $@
+
+build/abi-smoke: $(ABI_OBJECTS) | $(PLUGIN_FIXTURES)
 	$(CC) $(CFLAGS) $^ $(HOST_LIBS) -o $@
 
 # Full run: needs the game's Linux binaries (INPUT_DIR) for tier0-smoke.
@@ -111,7 +120,7 @@ progress: $(PREP)/layout.json
 build/tier0-smoke-ubsan: $(TIER0_OBJECTS_UBSAN)
 	$(CC) $(CFLAGS) $(UBSAN_FLAGS) $^ $(HOST_LIBS) -o $@
 
-build/abi-smoke-ubsan: $(ABI_OBJECTS_UBSAN)
+build/abi-smoke-ubsan: $(ABI_OBJECTS_UBSAN) | $(PLUGIN_FIXTURES)
 	$(CC) $(CFLAGS) $(UBSAN_FLAGS) $^ $(HOST_LIBS) -o $@
 
 sanitize: build/tier0-smoke-ubsan build/abi-smoke-ubsan
