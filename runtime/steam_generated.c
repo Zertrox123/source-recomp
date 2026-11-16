@@ -3266,6 +3266,19 @@ static void m303(CPU *c, void *self, uint32_t args, uint32_t sret) {
     bool r = ((F)fn)(self, a0, a1, a2, a3);
     c->eax = r ? 1u : 0u;
 }
+/* STEAMUGC_INTERFACE_VERSION016::GetQueryUGCResult */
+static void m304(CPU *c, void *self, uint32_t args, uint32_t sret) {
+    (void)args; (void)sret;
+    typedef bool (*F)(void *, uint64_t, uint32_t, void *);
+    static void *cache;
+    void *fn = __atomic_load_n(&cache, __ATOMIC_RELAXED);
+    if (!fn) __atomic_store_n(&cache, fn = steam_flat(c, "SteamAPI_ISteamUGC_GetQueryUGCResult"), __ATOMIC_RELAXED);
+    uint64_t a0 = (uint64_t)R64(args + 0u);
+    uint32_t a1 = (uint32_t)R32(args + 8u);
+    void *a2 = steam_out(c, R32(args + 12u), 9764u);
+    bool r = ((F)fn)(self, a0, a1, a2);
+    c->eax = r ? 1u : 0u;
+}
 /* STEAMUGC_INTERFACE_VERSION016::GetQueryUGCStatistic */
 static void m305(CPU *c, void *self, uint32_t args, uint32_t sret) {
     (void)args; (void)sret;
@@ -4244,6 +4257,17 @@ static void m391(CPU *c, void *self, uint32_t args, uint32_t sret) {
     void *a2 = steam_out_buffer(c, R32(args + 12u), (int64_t)(int32_t)R32(args + 16u), 1u);
     uint32_t a3 = (uint32_t)R32(args + 16u);
     bool r = ((F)fn)(self, a0, a1, a2, a3);
+    c->eax = r ? 1u : 0u;
+}
+/* STEAMUGC_INTERFACE_VERSION020::GetQueryUGCResult */
+static void m392(CPU *c, void *self, uint32_t args, uint32_t sret) {
+    (void)args; (void)sret;
+    typedef bool (*F)(void *, uint64_t, uint32_t, void *);
+    void *fn = steam_slot(c, self, 5u);
+    uint64_t a0 = (uint64_t)R64(args + 0u);
+    uint32_t a1 = (uint32_t)R32(args + 8u);
+    void *a2 = steam_out(c, R32(args + 12u), 9772u);
+    bool r = ((F)fn)(self, a0, a1, a2);
     c->eax = r ? 1u : 0u;
 }
 /* STEAMUGC_INTERFACE_VERSION020::GetQueryUGCStatistic */
@@ -11310,7 +11334,7 @@ const SteamMethodInfo steam_methods[] = {
     {"STEAMUGC_INTERFACE_VERSION016::GetQueryUGCNumKeyValueTags", 14u, 15u, 0, m301, NULL},
     {"STEAMUGC_INTERFACE_VERSION016::GetQueryUGCNumTags", 14u, 6u, 0, m302, NULL},
     {"STEAMUGC_INTERFACE_VERSION016::GetQueryUGCPreviewURL", 14u, 9u, 0, m303, NULL},
-    {"STEAMUGC_INTERFACE_VERSION016::GetQueryUGCResult", 14u, 5u, 0, NULL, "param\u00e8tre out SteamUGCDetails_t pDetails"},
+    {"STEAMUGC_INTERFACE_VERSION016::GetQueryUGCResult", 14u, 5u, 0, m304, NULL},
     {"STEAMUGC_INTERFACE_VERSION016::GetQueryUGCStatistic", 14u, 12u, 0, m305, NULL},
     {"STEAMUGC_INTERFACE_VERSION016::GetQueryUGCTag", 14u, 7u, 0, m306, NULL},
     {"STEAMUGC_INTERFACE_VERSION016::GetQueryUGCTagDisplayName", 14u, 8u, 0, m307, NULL},
@@ -11398,7 +11422,7 @@ const SteamMethodInfo steam_methods[] = {
     {"STEAMUGC_INTERFACE_VERSION020::GetQueryUGCNumKeyValueTags", 27u, 15u, 0, m389, NULL},
     {"STEAMUGC_INTERFACE_VERSION020::GetQueryUGCNumTags", 27u, 6u, 0, m390, NULL},
     {"STEAMUGC_INTERFACE_VERSION020::GetQueryUGCPreviewURL", 27u, 9u, 0, m391, NULL},
-    {"STEAMUGC_INTERFACE_VERSION020::GetQueryUGCResult", 27u, 5u, 0, NULL, "param\u00e8tre out SteamUGCDetails_t pDetails"},
+    {"STEAMUGC_INTERFACE_VERSION020::GetQueryUGCResult", 27u, 5u, 0, m392, NULL},
     {"STEAMUGC_INTERFACE_VERSION020::GetQueryUGCStatistic", 27u, 12u, 0, m393, NULL},
     {"STEAMUGC_INTERFACE_VERSION020::GetQueryUGCTag", 27u, 7u, 0, m394, NULL},
     {"STEAMUGC_INTERFACE_VERSION020::GetQueryUGCTagDisplayName", 27u, 8u, 0, m395, NULL},
