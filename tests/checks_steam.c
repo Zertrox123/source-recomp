@@ -6,6 +6,7 @@
 // callback et résultat d'appel pompés. Aucun identifiant n'est affiché.
 #include "checks.h"
 #include <pthread.h>
+#include "posix.h"   // rt_minidump_argument
 #include "steam.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -484,4 +485,29 @@ RT_CHECK(steam_config_reads_top_level_keys_only) {
     assert(!steam_config_text_value("{\"games\": {\"hl2\": {\"steam_appid\": 220}}}", "steam_appid", out, sizeof(out)));
     assert(!steam_config_text_value("{\"steam_appid\": ", "steam_appid", out, sizeof(out)));
     assert(!steam_config_text_value("", "steam_appid", out, sizeof(out)));
+}
+
+// Sans client Steam : SteamAPI_InitSafe échoue, le moteur s'arrête par
+// Error("Steam is not running...") que Sys_Error du client Linux n'imprime pas,
+// puis écrivait volontairement à l'adresse invitée 0 (faux SIGBUS). Le lanceur
+// ajoute -nominidumps (sortie Plat_ExitProcess(100)) et le pont explique l'échec.
+RT_CHECK(steam_absent_client_exits_cleanly) {
+    char *none[] = {"-game", "portal2", "-novid", "+map", "sp_a1_intro3"};
+    const char *added = rt_minidump_argument(5, none);
+    assert(added && !strcmp(added, "-nominidumps"));
+    assert(rt_minidump_argument(0, NULL));       // aucun argument : ajouté
+    char *given[] = {"-game", "portal2", "-nominidumps"};
+    assert(!rt_minidump_argument(3, given));   // jamais deux fois
+    setenv("P2_SYS_ERROR_CRASH", "1", 1);
+    assert(!rt_minidump_argument(5, none));    // faute volontaire gardée sur demande
+    setenv("P2_SYS_ERROR_CRASH", "0", 1);
+    assert(rt_minidump_argument(5, none));
+    unsetenv("P2_SYS_ERROR_CRASH");
+
+    const char *absent = steam_init_failure_note(0), *running = steam_init_failure_note(1),
+               *unknown = steam_init_failure_note(-1);
+    assert(strstr(absent, "not running") && strstr(absent, "Start Steam"));
+    assert(strstr(running, "although the Steam client is running"));
+    assert(strstr(unknown, "SteamAPI_Init failed") && strstr(unknown, "Check that Steam is running"));
+    assert(absent[strlen(absent) - 1] == '\n' && running[strlen(running) - 1] == '\n' && unknown[strlen(unknown) - 1] == '\n');
 }

@@ -20,6 +20,7 @@ static uint32_t guest_string(const char *value) {
 int rt_d3d9_available(void);   // runtime/d3d9.c
 
 int rt_renderer_request(const char *value);   // runtime/d3d9.c
+const char *rt_minidump_argument(int count, char *const *args);   // runtime/process.c
 
 // Rendu Direct3D 9 natif par défaut : le jeu prend alors shaderapivk.so
 // (-vulkan), dont le Direct3D 9 vient de libd3d9metal (runtime/d3d9.c).
@@ -69,13 +70,16 @@ int main(int argc, char **argv) {
     int renderer = wants_d3d9(first, argc, argv);
     // OpenGL : sans sampler objects sur macOS, togl doit filtrer par texture (runtime/gl.c).
     const char *sampler = renderer > 0 ? NULL : rt_gl_sampler_argument(argc - first, argv + first);
-    uint32_t count = 1, vector = rt_alloc(((uint32_t)(argc - first) + 4) * 4);
+    // Sys_Error sort proprement au lieu d'écrire volontairement à l'adresse 0 (runtime/process.c).
+    const char *minidump = rt_minidump_argument(argc - first, argv + first);
+    uint32_t count = 1, vector = rt_alloc(((uint32_t)(argc - first) + 5) * 4);
     if (!vector) { rt_destroy(); return 2; }
     W32(vector, guest_string(RT_GAME_PROGRAM));
     for (int i = first; i < argc; ++i)
         if (renderer >= 0 || strcmp(argv[i], "-vulkan")) W32(vector + count++ * 4, guest_string(argv[i]));
     if (renderer > 0) W32(vector + count++ * 4, guest_string("-vulkan"));
     if (sampler) { W32(vector + count++ * 4, guest_string(sampler)); fprintf(stderr, "renderer: OpenGL without sampler objects, adding %s\n", sampler); }
+    if (minidump) W32(vector + count++ * 4, guest_string(minidump));
     W32(vector + count * 4, 0);
     {   // /proc/self/cmdline : arguments invités séparés par des NUL
         size_t total = 0;

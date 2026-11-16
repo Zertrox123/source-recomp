@@ -13,6 +13,8 @@ int rt_linux_signal(int darwin);
 int rt_darwin_signal(int linux_value);
 // Statut wait() Darwin -> encodage Linux (numéros de signaux traduits).
 uint32_t rt_linux_wait_status(int status);
+// Argument ajouté au jeu pour que Sys_Error sorte au lieu d'écrire à l'adresse 0 ; NULL si déjà là.
+const char *rt_minidump_argument(int count, char *const *args);
 
 // Flux invités (libc.c) : enveloppe un FILE hôte dans un handle invité.
 uint32_t rt_stream_new(FILE *file);

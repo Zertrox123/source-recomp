@@ -724,6 +724,30 @@ static void set_app_id(void) {
     }
 }
 
+// Sans SteamAPI_Init réussi, SteamApps() reste nul et le moteur s'arrête au
+// chargement de la DLL serveur (SV_InitGameDLL) par Error("Steam is not
+// running. You must start Steam in order to play this game."), texte que
+// Sys_Error du client Linux n'imprime nulle part (Sys_Printf : developer
+// seulement). Le pont le dit donc lui-même, à chaque échec (cinq en tout au
+// démarrage de Portal 2) : le dernier précède de peu la sortie, et la fin du
+// journal est ce qu'on lit. steam_running : réponse de SteamAPI_IsSteamRunning,
+// -1 si inconnue.
+const char *steam_init_failure_note(int steam_running) {
+    if (steam_running > 0)
+        return "steam: SteamAPI_Init failed although the Steam client is running (logged out, offline, or the game "
+               "is not in this account's library?); the engine stops at startup without Steam.\n";
+    if (!steam_running)
+        return "steam: the Steam client is not running; the engine stops at startup without it (\"Steam is not "
+               "running\"). Start Steam, log in, then launch the game again.\n";
+    return "steam: SteamAPI_Init failed (see the Steam lines above); the engine stops at startup without Steam. "
+           "Check that Steam is running and logged in, then launch the game again.\n";
+}
+static void report_init_failure(void) {
+    void *handle = open_library();
+    bool (*running)(void) = handle ? (bool (*)(void))dlsym(handle, "SteamAPI_IsSteamRunning") : NULL;
+    fputs(steam_init_failure_note(running ? running() : -1), stderr);
+}
+
 // SteamErrMsg du SDK 1.59+ : char[k_cchMaxSteamErrMsg = 1024], écrit par la dylib.
 #define STEAM_ERR_MSG 1024u
 // Liste des versions à vérifier : chaînes terminées par NUL, la dernière suivie d'un
@@ -758,6 +782,7 @@ static int steam_shim(CPU *c, const char *name) {
                     message ? message : "", getenv("SteamAppId") ? getenv("SteamAppId") : "unset");
             for (const char *v = versions; v && *v; v += strlen(v) + 1) fprintf(stderr, " %s", v);
             fputs(")\n", stderr);
+            report_init_failure();
         }
         else enable_manual_dispatch(c);
         c->eax = (uint32_t)result;
@@ -784,6 +809,7 @@ static int steam_shim(CPU *c, const char *name) {
         bool ok = init();
         capture_end(&capture);
         if (ok) enable_manual_dispatch(c);
+        else report_init_failure();
         c->eax = ok;
     } else if (!strcmp(name, "SteamAPI_Shutdown")) {
         FLAT(void (*)(void), "SteamAPI_Shutdown")();
