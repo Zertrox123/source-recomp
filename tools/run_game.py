@@ -11,6 +11,7 @@ import games  # noqa: E402
 import language  # noqa: E402
 import launch  # noqa: E402
 import localconfig  # noqa: E402
+from make_app import prepare_puzzlemaker
 
 TIMEOUT_STATUS = 124   # as timeout(1): the game was still running when the diagnostic timeout fell
 
@@ -36,6 +37,8 @@ def run(config, game, game_args=(), binary=None, timeout=60, show=False, env=Non
             if user_dir.is_dir(): shutil.copytree(user_dir, diag_dir, symlinks=True)
             else: diag_dir.mkdir(parents=True)   # no saves yet: the game starts from scratch
         user_dir = diag_dir
+    if game['name'] == 'portal2':
+        prepare_puzzlemaker(config['game_root'], user_dir)
     command = launch.command(binary, build_dir / 'prep', config['game_root'], config['linux_root'], user_dir, game_args)
     env = launch.environment(config, game, base=env, hidden=not show)
     log = build_dir / 'launch.log'

@@ -22,6 +22,7 @@ user_dir in config/local.json, saves go to
 import argparse
 import json
 import plistlib
+import re
 import shlex
 import shutil
 import stat
@@ -256,6 +257,35 @@ def default_args(game):
     return ['-game', game['mod'], '-novid', '+m_rawinput', '1']
 
 
+def prepare_puzzlemaker(game_dir, user_dir):
+    """Mount the SDK tree for absolute Puzzle Maker writes in the Linux filesystem.
+
+    CBaseFileSystem rejects absolute writes outside its search paths before
+    calling fopen. Windows gameinfo.txt only mounts portal2, while the editor
+    exports into its sibling sdk_content. Use a separate path ID so the SDK
+    assets do not change GAME lookup order. Keep the Steam installation intact.
+    """
+    target = Path(user_dir) / 'portal2/gameinfo.txt'
+    source = target if target.exists() else Path(game_dir) / 'portal2/gameinfo.txt'
+    if not source.exists(): return  # packaging tests / incomplete game installation
+    data = source.read_bytes()
+    entries = []
+    if not re.search(rb'(?im)^\s*"?SDKCONTENT"?\s+', data):
+        entries.append(b'SDKCONTENT\t\t|gameinfo_path|../sdk_content')
+    if entries:
+        search = re.search(rb'(?im)^([ \t]*)"?SearchPaths"?[ \t\r\n]*\{', data)
+        if not search: raise ValueError(f'{source}: SearchPaths block missing')
+        newline = b'\r\n' if b'\r\n' in data else b'\n'
+        entry = b''.join(newline + search[1] + b'\t' + item for item in entries)
+        data = data[:search.end()] + entry + data[search.end():]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists() or target.read_bytes() != data:
+        temporary = target.with_name('.gameinfo.txt.puzzlemaker.tmp')
+        temporary.write_bytes(data)
+        temporary.replace(target)
+    (Path(user_dir) / 'sdk_content/maps').mkdir(parents=True, exist_ok=True)
+
+
 def build_app(app, binary, prep, config, paths, game_args):
     macos = app / 'Contents/MacOS'
     resources = app / 'Contents/Resources'
@@ -279,6 +309,11 @@ def build_app(app, binary, prep, config, paths, game_args):
         **{key: shlex.quote(str(value)) for key, value in paths.items()}))
     launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     bundle_libraries(app, binary, localconfig.host_prefix(config), executable=game['executable'])
+    compiler = ROOT / 'build/portal2-map-compiler'
+    compiler_prep = ROOT / 'build/tools/vbsp/prep'
+    if game['name'] == 'portal2' and compiler.exists() and (compiler_prep / 'layout.json').exists():
+        bundle_libraries(app, compiler, localconfig.host_prefix(config), executable='portal2-map-compiler')
+        copy_tree(compiler_prep, resources / 'map-compiler/prep')
     bundle_steam_api(app, config)
     bundle_d3d9metal(app, config)
 
@@ -316,6 +351,9 @@ def main():
         'binary': binary, 'game_dir': Path(config['game_root']),
         'linux_root': Path(config['linux_root']), 'user_dir': user_dir(config),
     }
+
+    if game['name'] == 'portal2':
+        prepare_puzzlemaker(paths['game_dir'], paths['user_dir'])
 
     # Construite à côté puis échangée : un échec en cours de route laisse
     # l'app existante intacte.

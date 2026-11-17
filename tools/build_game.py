@@ -62,7 +62,12 @@ def roots(layout, roots_file):
             if module['init']: result.append(f'{module["name"]}:init:dt')
             result += [f'{module["name"]}:init:{i}' for i in range(len(module['init_array']))]
     extra = ROOT / roots_file
-    if extra.exists(): result += json.loads(extra.read_text())
+    if extra.exists():
+        modules = {m['name'] for m in layout['modules']}
+        extra_roots = json.loads(extra.read_text())
+        if program == 'vbsp_linux':
+            extra_roots = [root for root in extra_roots if root.split(':')[0] in modules]
+        result += extra_roots
     return list(dict.fromkeys(result))
 
 
@@ -289,6 +294,7 @@ def main():
     parser.add_argument('--order-file', type=Path,
                         help='linker order file (tools/hot_order.py): hot code grouped together')
     parser.add_argument('--jobs', type=int, default=os.cpu_count() or 1)
+    parser.add_argument('--build-dir', type=Path, help='separate build tree for map tools')
     parser.add_argument('--objdump', default='objdump', help='disassembler (LLVM objdump)')
     parser.add_argument('--stats', type=Path, help='default: <build_dir>/build-stats.json')
     parser.add_argument('--config', type=Path, default=localconfig.DEFAULT_PATH,
@@ -296,7 +302,7 @@ def main():
     args = parser.parse_args()
     config = localconfig.game_config(localconfig.load(args.config), args.game)
     game = games.profile(config)
-    build_dir = ROOT / game['build_dir']
+    build_dir = args.build_dir or ROOT / game['build_dir']
     args.layout = args.layout or build_dir / 'prep/layout.json'
     args.out = args.out or ROOT / game['binary']
     args.stats = args.stats or build_dir / 'build-stats.json'

@@ -590,6 +590,10 @@ for id in "${SELECTED[@]}"; do
     python3 tools/gameprep.py --game "$id"
     step "Recompiling $TITLE (about $MINUTES minutes the first time, seconds afterwards)"
     python3 tools/build_game.py --game "$id" --release
+    if [ "$id" = portal2 ]; then
+        step "Building the Puzzle Maker map compilers"
+        python3 tools/build_puzzlemaker.py
+    fi
     step "Creating $APP_DIR/$APP_NAME.app"
     python3 tools/make_app.py --game "$id" --dest "$APP_DIR"
 done
