@@ -2,6 +2,7 @@ import importlib.util
 import json
 import plistlib
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,7 @@ class MakeAppTests(unittest.TestCase):
         (self.root / 'config').mkdir()
         (self.root / 'tools').mkdir(exist_ok=True)
         (self.root / 'tools/language.py').write_text('')
+        shutil.copy(REPO / 'tools/puzzlemaker.py', self.root / 'tools/puzzlemaker.py')
         steam = self.tmp / 'steamworks/libsteam_api.dylib'
         steam.parent.mkdir()
         steam.write_bytes(b'steam')
@@ -51,33 +53,52 @@ class MakeAppTests(unittest.TestCase):
         config = make_app.localconfig.game_config(self.config, args[1] if args[:1] == ('--game',) else None)
         return dest / f"{make_app.games.profile(config)['app_name']}.app"
 
-    def test_puzzlemaker_sdk_mount_preserves_gameinfo_and_saves(self):
+    def test_puzzlemaker_sdk_mount_refreshes_from_steam_and_preserves_saves(self):
         game = Path(self.config['game_root'])
         (game / 'portal2').mkdir(parents=True)
         original = b'"GameInfo"\r\n{\r\n FileSystem {\r\n  SearchPaths\r\n  {\r\n   Game |gameinfo_path|.\r\n  }\r\n }\r\n}\r\n'
-        (game / 'portal2/gameinfo.txt').write_bytes(original)
+        source = game / 'portal2/gameinfo.txt'
+        source.write_bytes(original)
         user = self.tmp / 'userdata'
         (user / 'portal2/save').mkdir(parents=True)
         (user / 'portal2/save/quick.sav').write_bytes(b'keep')
         make_app.prepare_puzzlemaker(game, user)
         target = user / 'portal2/gameinfo.txt'
         changed = target.read_bytes()
-        self.assertIn(b'SDKCONTENT\t\t|gameinfo_path|../sdk_content', changed)
-        self.assertIn(b'Game |gameinfo_path|.', changed)
-        self.assertEqual((game / 'portal2/gameinfo.txt').read_bytes(), original)
+        entry = b'\r\n  \tSDKCONTENT\t\t|gameinfo_path|../sdk_content'
+        self.assertEqual(changed.replace(entry, b'', 1), original)
+        self.assertEqual(source.read_bytes(), original)
         self.assertEqual((user / 'portal2/save/quick.sav').read_bytes(), b'keep')
         self.assertTrue((user / 'sdk_content/maps').is_dir())
         make_app.prepare_puzzlemaker(game, user)
         self.assertEqual(target.read_bytes(), changed)
         target.write_bytes(changed + b'// custom override\r\n')
+        updated = original.replace(b'Game |gameinfo_path|.', b'Game |gameinfo_path|update')
+        source.write_bytes(updated)
         make_app.prepare_puzzlemaker(game, user)
-        self.assertTrue(target.read_bytes().endswith(b'// custom override\r\n'))
+        self.assertEqual(target.read_bytes().replace(entry, b'', 1), updated)
+        self.assertEqual(source.read_bytes(), updated)
+        source.write_bytes(changed)
+        make_app.prepare_puzzlemaker(game, user)
+        self.assertEqual(target.read_bytes(), changed)  # Steam already supplies the mount
 
     def test_launcher_reads_nothing_from_repo(self):
         app = self.run_main()
         self.assertTrue((app / 'Contents/Resources/language.py').exists())
         self.assertTrue((app / 'Contents/Resources/local.json').exists())
         self.assertNotIn(str(self.root), (app / 'Contents/MacOS/launcher').read_text())
+
+    def test_app_bundles_the_gameinfo_refresh_for_launch(self):
+        app = self.run_main()
+        launcher = (app / 'Contents/MacOS/launcher').read_text()
+        self.assertIn('/usr/bin/python3 "$PUZZLEMAKER" "$GAME_DIR"', launcher)
+        source = Path(self.config['game_root']) / 'portal2/gameinfo.txt'
+        source.parent.mkdir(parents=True)
+        source.write_text('FileSystem {\n SearchPaths\n {\n  Game update\n }\n}\n')
+        user = self.support / 'userdata'
+        subprocess.run([sys.executable, app / 'Contents/Resources/puzzlemaker.py',
+                        source.parent.parent, user], check=True)
+        self.assertIn('SDKCONTENT', (user / 'portal2/gameinfo.txt').read_text())
 
     def test_steam_api_bundled_and_exported(self):
         # The copied executable cannot find the repo, so the launcher must name the bundled Steam library.
@@ -104,8 +125,11 @@ class MakeAppTests(unittest.TestCase):
             (app / 'Contents/MacOS' / executable).write_bytes(binary.read_bytes())
         with mock.patch.object(make_app, 'bundle_libraries', bundle):
             app = self.run_main()
-        self.assertEqual((app / 'Contents/MacOS/portal2-map-compiler').read_bytes(), b'native compiler')
-        self.assertEqual((app / 'Contents/Resources/map-compiler/prep/vbsp_linux').read_bytes(), b'prepared vbsp')
+            self.assertEqual((app / 'Contents/MacOS/portal2-map-compiler').read_bytes(), b'native compiler')
+            self.assertEqual((app / 'Contents/Resources/map-compiler/prep/vbsp_linux').read_bytes(), b'prepared vbsp')
+            self.run_main('--no-map-compiler')
+        self.assertFalse((app / 'Contents/MacOS/portal2-map-compiler').exists())
+        self.assertFalse((app / 'Contents/Resources/map-compiler').exists())
 
     def test_prep_copied_into_bundle(self):
         app = self.run_main()

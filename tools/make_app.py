@@ -22,7 +22,6 @@ user_dir in config/local.json, saves go to
 import argparse
 import json
 import plistlib
-import re
 import shlex
 import shutil
 import stat
@@ -33,6 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import games  # noqa: E402
 import localconfig  # noqa: E402
+from puzzlemaker import prepare_puzzlemaker  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 # Données propres à l'app, hors du dépôt : ./uninstall.sh supprime ce dossier.
@@ -54,8 +54,13 @@ GAME_DIR={game_dir}   # quoted by shlex: never re-parsed by the shell
 if [ ! -x "$HERE/{executable}" ]; then alert "Exécutable introuvable dans l'app. Relancer tools/make_app.py."; exit 1; fi
 if [ ! -d "$GAME_DIR" ]; then alert "Données du jeu introuvables (disque externe débranché ?) : $GAME_DIR"; exit 1; fi
 mkdir -p "$(dirname "$LOG")" {user_dir}
+: >"$LOG"
+PUZZLEMAKER="$HERE/../Resources/puzzlemaker.py"
+if [ -f "$PUZZLEMAKER" ]; then
+    /usr/bin/python3 "$PUZZLEMAKER" "$GAME_DIR" {user_dir} >>"$LOG" 2>&1
+fi
 # Check the effective game data (including user overrides) before starting Steam.
-if ! "$HERE/{executable}" --check-game-data --game-dir {game_dir} --linux-root {linux_root} --user-dir {user_dir} >"$LOG" 2>&1; then
+if ! "$HERE/{executable}" --check-game-data --game-dir {game_dir} --linux-root {linux_root} --user-dir {user_dir} >>"$LOG" 2>&1; then
     alert "$(cat "$LOG")"
     exit 1
 fi
@@ -75,7 +80,7 @@ export P2_STEAM_API_DYLIB="$HERE/../Frameworks/libsteam_api.dylib"
 # Un -language passé au lanceur l'emporte ; en cas d'échec, le jeu reste en anglais.
 LANGUAGE_ARGS=$(/usr/bin/python3 "$HERE/../Resources/language.py" --config "$HERE/../Resources/local.json" -- {game_args} "$@" 2>/dev/null)
 exec "$HERE/{executable}" --images "$(dirname "$HERE")/Resources/prep" --game-dir {game_dir} --linux-root {linux_root} \\
-    --user-dir {user_dir} -- {game_args} $LANGUAGE_ARGS "$@" >"$LOG" 2>&1
+    --user-dir {user_dir} -- {game_args} $LANGUAGE_ARGS "$@" >>"$LOG" 2>&1
 '''
 
 
@@ -257,36 +262,7 @@ def default_args(game):
     return ['-game', game['mod'], '-novid', '+m_rawinput', '1']
 
 
-def prepare_puzzlemaker(game_dir, user_dir):
-    """Mount the SDK tree for absolute Puzzle Maker writes in the Linux filesystem.
-
-    CBaseFileSystem rejects absolute writes outside its search paths before
-    calling fopen. Windows gameinfo.txt only mounts portal2, while the editor
-    exports into its sibling sdk_content. Use a separate path ID so the SDK
-    assets do not change GAME lookup order. Keep the Steam installation intact.
-    """
-    target = Path(user_dir) / 'portal2/gameinfo.txt'
-    source = target if target.exists() else Path(game_dir) / 'portal2/gameinfo.txt'
-    if not source.exists(): return  # packaging tests / incomplete game installation
-    data = source.read_bytes()
-    entries = []
-    if not re.search(rb'(?im)^\s*"?SDKCONTENT"?\s+', data):
-        entries.append(b'SDKCONTENT\t\t|gameinfo_path|../sdk_content')
-    if entries:
-        search = re.search(rb'(?im)^([ \t]*)"?SearchPaths"?[ \t\r\n]*\{', data)
-        if not search: raise ValueError(f'{source}: SearchPaths block missing')
-        newline = b'\r\n' if b'\r\n' in data else b'\n'
-        entry = b''.join(newline + search[1] + b'\t' + item for item in entries)
-        data = data[:search.end()] + entry + data[search.end():]
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if not target.exists() or target.read_bytes() != data:
-        temporary = target.with_name('.gameinfo.txt.puzzlemaker.tmp')
-        temporary.write_bytes(data)
-        temporary.replace(target)
-    (Path(user_dir) / 'sdk_content/maps').mkdir(parents=True, exist_ok=True)
-
-
-def build_app(app, binary, prep, config, paths, game_args):
+def build_app(app, binary, prep, config, paths, game_args, *, map_compiler=True):
     macos = app / 'Contents/MacOS'
     resources = app / 'Contents/Resources'
     macos.mkdir(parents=True)
@@ -302,6 +278,8 @@ def build_app(app, binary, prep, config, paths, game_args):
     (resources / 'local.json').write_text(json.dumps(config, indent=2) + '\n')
 
     game = games.profile(config)
+    if game['name'] == 'portal2':
+        shutil.copy(ROOT / 'tools/puzzlemaker.py', resources / 'puzzlemaker.py')
     launcher = macos / 'launcher'
     launcher.write_text(LAUNCHER.format(
         name=game['app_name'], log_name=game['log_name'], appid=int(game['steam_appid']), executable=game['executable'],
@@ -311,7 +289,7 @@ def build_app(app, binary, prep, config, paths, game_args):
     bundle_libraries(app, binary, localconfig.host_prefix(config), executable=game['executable'])
     compiler = ROOT / 'build/portal2-map-compiler'
     compiler_prep = ROOT / 'build/tools/vbsp/prep'
-    if game['name'] == 'portal2' and compiler.exists() and (compiler_prep / 'layout.json').exists():
+    if map_compiler and game['name'] == 'portal2' and compiler.exists() and (compiler_prep / 'layout.json').exists():
         bundle_libraries(app, compiler, localconfig.host_prefix(config), executable='portal2-map-compiler')
         copy_tree(compiler_prep, resources / 'map-compiler/prep')
     bundle_steam_api(app, config)
@@ -334,6 +312,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     games.add_argument(parser)
     parser.add_argument('--dest', type=Path, default=Path.home() / 'Applications')
+    parser.add_argument('--no-map-compiler', action='store_true', help='omit the optional Puzzle Maker compiler')
     parser.add_argument('game_args', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     game_args = args.game_args[1:] if args.game_args[:1] == ['--'] else args.game_args
@@ -362,7 +341,7 @@ def main():
     app = args.dest / f'.{name}.app.partial'
     if app.exists(): shutil.rmtree(app)
     try:
-        build_app(app, binary, prep, config, paths, game_args)
+        build_app(app, binary, prep, config, paths, game_args, map_compiler=not args.no_map_compiler)
     except BaseException:
         shutil.rmtree(app, ignore_errors=True)
         raise

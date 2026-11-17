@@ -283,7 +283,7 @@ def translate(pc, insn, entries=frozenset(), callees=None, cases=None, rebase=Fa
             callees.add(target)
             branch = f'c->flags = f; rt_jump_fn(c, fn_{target:x}, {code_address(target, rebase)}); return;'
             return f'if ({test}) {{ {branch} }} {end}', [nxt]
-        branch = ('rt_poll(); ' if target <= pc else '') + f'goto L{target:x};'
+        branch = ('rt_poll(c); ' if target <= pc else '') + f'goto L{target:x};'
         return f'if ({test}) {{ {branch} }} {end}', [target, nxt]
     if op == 'jmp' or (op.startswith('j') and op[1:] in CC):
         target = Operand(args)
@@ -298,7 +298,7 @@ def translate(pc, insn, entries=frozenset(), callees=None, cases=None, rebase=Fa
                 callees.update(t for t in cases if t in entries)
                 labels = ' '.join(f'case {t:#x}u: goto L{t:x};' for t in local)
                 selector = f'(uint32_t)(a - {CODE_RELOCATED})' if rebase else 'a'
-                return (f'a = {target.read()}; rt_poll(); switch ({selector}) {{ {labels} '
+                return (f'a = {target.read()}; rt_poll(c); switch ({selector}) {{ {labels} '
                         'default: c->flags = f; rt_jump_any(c, a); return; }'), local
             return f'a = {target.read()}; c->flags = f; rt_jump_any(c, a); return;', []
         if target.imm in entries:
@@ -306,7 +306,7 @@ def translate(pc, insn, entries=frozenset(), callees=None, cases=None, rebase=Fa
             branch = f'c->flags = f; rt_jump_fn(c, fn_{target.imm:x}, {code_address(target.imm, rebase)}); return;'
             successors = []
         else:
-            branch = ('rt_poll(); ' if target.imm <= pc else '') + f'goto L{target.imm:x};'
+            branch = ('rt_poll(c); ' if target.imm <= pc else '') + f'goto L{target.imm:x};'
             successors = [target.imm]
         if op == 'jmp':
             return branch, successors
@@ -375,7 +375,7 @@ def translate(pc, insn, entries=frozenset(), callees=None, cases=None, rebase=Fa
     elif op == 'stmxcsr' and len(operands) == 1:
         code = operands[0].write('c->mxcsr')
     elif op == 'pause' and not operands:
-        code = 'rt_poll(); __atomic_signal_fence(__ATOMIC_SEQ_CST);'
+        code = 'rt_poll(c); __atomic_signal_fence(__ATOMIC_SEQ_CST);'
     elif op in ('cld', 'std') and not operands:
         code = f'c->df = {int(op == "std")}u;'
     elif op == 'leave' and not operands:

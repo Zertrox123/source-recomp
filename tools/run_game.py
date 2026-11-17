@@ -11,7 +11,7 @@ import games  # noqa: E402
 import language  # noqa: E402
 import launch  # noqa: E402
 import localconfig  # noqa: E402
-from make_app import prepare_puzzlemaker
+from puzzlemaker import prepare_puzzlemaker  # noqa: E402
 
 TIMEOUT_STATUS = 124   # as timeout(1): the game was still running when the diagnostic timeout fell
 

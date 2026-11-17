@@ -46,7 +46,8 @@ def plan(config, tool=None):
         extent = max(load[2] + load[5] for load in module.loads)
         result.append((p, program_base, extent))
         base = max(base, program_base + extent)
-    if base >= 0x30000000:
+    # Match the corresponding RT_VM_BEGIN in runtime/rt.h.
+    if base > (0x30000000 if tool else 0x21000000):
         raise ValueError('module plan overlaps reserved guest mmap space')
     return result
 

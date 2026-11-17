@@ -583,19 +583,29 @@ EOF
 # --- macOS build ----------------------------------------------------------
 cd "$REPO"
 APP_DIR="${P2_APP_DIR:-$HOME/Applications}"
-for id in "${SELECTED[@]}"; do
+for i in "${!SELECTED[@]}"; do
+    id=${SELECTED[$i]}
     game_info "$id"
     MINUTES=10; [ "$id" = hl2 ] && MINUTES=20
     step "Preparing the Linux modules of $TITLE"
     python3 tools/gameprep.py --game "$id"
     step "Recompiling $TITLE (about $MINUTES minutes the first time, seconds afterwards)"
     python3 tools/build_game.py --game "$id" --release
+    app_args=(--game "$id" --dest "$APP_DIR")
     if [ "$id" = portal2 ]; then
-        step "Building the Puzzle Maker map compilers"
-        python3 tools/build_puzzlemaker.py
+        if [ ! -f "${LINUX_DIRS[$i]}/bin/linux32/vbsp_linux" ]; then
+            warn "vbsp_linux is missing: installing Portal 2 without the Puzzle Maker map compilers"
+            app_args+=(--no-map-compiler)
+        else
+            step "Building the Puzzle Maker map compilers"
+            if ! python3 tools/build_puzzlemaker.py; then
+                warn "Puzzle Maker map compilers did not build: continuing with the Portal 2 installation"
+                app_args+=(--no-map-compiler)
+            fi
+        fi
     fi
     step "Creating $APP_DIR/$APP_NAME.app"
-    python3 tools/make_app.py --game "$id" --dest "$APP_DIR"
+    python3 tools/make_app.py "${app_args[@]}"
 done
 
 # --- iOS ------------------------------------------------------------------

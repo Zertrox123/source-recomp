@@ -328,6 +328,9 @@ def main():
         print('Runtime traps for unimplemented imports: ' + ', '.join(unimplemented))
     identity = subprocess.run(['clang', '--version'], capture_output=True, text=True, check=True).stdout
     memory = (['-DRT_FAST_MEMORY'] if args.fast_memory else []) + (['-DRT_TRACED_CALLS'] if args.traced_calls else [])
+    program = layout['program']
+    if program == 'vbsp_linux':
+        memory.append('-DRT_MAP_COMPILER')
     profile = []
     if args.pgo_generate:
         profile = ['-fprofile-instr-generate', '-DRT_PGO_GENERATE']
@@ -341,7 +344,6 @@ def main():
     generated_flags = [f'-O{args.opt}', DEBUG[args.debug], *GENERATED_TUNING, *WARNINGS, *memory, *profile, '-Iruntime']
     sources = build_dir / 'gen/src'
     units = [(str(p), runtime_flags) for p in sorted(RUNTIME.glob('*.c'))]
-    program = layout['program']
     units.append((str(ROOT / 'src/main.c'), [*runtime_flags, f'-DRT_GAME_PROGRAM="{program}"']))
     units += [(str(sources / name), generated_flags) for name in sorted(manifest['shards'])]
     units.append((str(sources / 'dispatch.c'), generated_flags))

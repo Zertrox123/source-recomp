@@ -740,8 +740,6 @@ RT_CHECK(puzzlemaker_child_writes_invalidate_parent_file_cache) {
     cleanup();
 }
 
-extern _Atomic unsigned rt_sigchld_pending;
-void rt_signal_poll(CPU *c);
 static pid_t signal_child;
 static int signal_deliveries;
 static int child_probe(CPU *c, const char *name) {
@@ -761,6 +759,14 @@ RT_CHECK(puzzlemaker_sigchld_delivers_exit_status_and_preserves_cpu) {
     memset(GPTR(action), 0, 140);
     W32(action, rt_dynamic_import("__sigchld_probe"));
     assert(call("sigaction", 3, 17u, action, 0u) == 0);
+    uint32_t getpid_import = rt_dynamic_import("getpid");
+    CPU c;
+    rt_cpu_reset(&c); c.esp = 0x2001e000;
+    rt_call(&c, getpid_import, RT_RETURN_SENTINEL);  // prime the import cache
+    uint32_t guest_pid = c.eax;
+    gfn direct = rt_lookup(0x6000);
+    assert(direct);  // fixture that returns 99
+    rt_guest_enter();
     for (int registration = 0; registration < 2; ++registration) {
         if (registration) assert(call("signal", 2, 17u, R32(action)) == 0);
         signal_deliveries = 0;
@@ -768,13 +774,21 @@ RT_CHECK(puzzlemaker_sigchld_delivers_exit_status_and_preserves_cpu) {
         if (!signal_child) _exit(23);
         for (int i = 0; i < 1000 && !atomic_load(&rt_sigchld_pending); ++i) usleep(1000);
         assert(atomic_load(&rt_sigchld_pending));
-        CPU c; rt_cpu_reset(&c); c.esp = 0x2001e000; c.eax = 123; c.ebx = 456;
+        rt_cpu_reset(&c); c.esp = 0x2001e000; c.eax = 123; c.ebx = 456;
         CPU before = c;
         rt_signal_set_blocked_mask(UINT64_C(1) << 16);
-        rt_signal_poll(&c);
+        rt_poll(&c);
         assert(signal_deliveries == 0 && atomic_load(&rt_sigchld_pending));
+        assert(!memcmp(&c, &before, sizeof(c)));
         rt_signal_set_blocked_mask(UINT64_C(1) << 9);
-        rt_signal_poll(&c);
+        if (registration) {
+            rt_call_import(&c, getpid_import, RT_RETURN_SENTINEL);
+            before.eax = guest_pid;
+        } else {
+            rt_call_fn(&c, direct, 0x6000, RT_RETURN_SENTINEL);
+            before.eax = 99;
+        }
+        before.eip = RT_RETURN_SENTINEL;
         assert(rt_signal_blocked_mask() == (UINT64_C(1) << 9));
         rt_signal_set_blocked_mask(0);
         assert(signal_deliveries == 1 && !memcmp(&c, &before, sizeof(c)));
@@ -782,4 +796,25 @@ RT_CHECK(puzzlemaker_sigchld_delivers_exit_status_and_preserves_cpu) {
         W32(action, 0); assert(call("sigaction", 3, 17u, action, 0u) == 0);
         W32(action, handler);
     }
+    rt_guest_leave();
+}
+
+static int signal_mask_probe(CPU *c, const char *name) {
+    if (strcmp(name, "__signal_mask_probe")) return 0;
+    c->eax = (uint32_t)rt_signal_blocked_mask();
+    return 1;
+}
+RT_SHIM_PROVIDER(signal_mask_probe)
+RT_CHECK(pthread_inherits_creator_signal_mask) {
+    uint32_t data = 0x2001f000;
+    uint64_t previous = rt_signal_blocked_mask();
+    uint32_t inherited = (1u << 9) | (1u << 16);
+    rt_guest_enter();
+    rt_signal_set_blocked_mask(inherited);
+    assert(!call("pthread_create", 4, data, 0u, rt_dynamic_import("__signal_mask_probe"), 0u));
+    rt_signal_set_blocked_mask(previous);
+    assert(!call("pthread_join", 2, R32(data), data + 4));
+    assert(R32(data + 4) == inherited);
+    assert(rt_signal_blocked_mask() == previous);
+    rt_guest_leave();
 }
