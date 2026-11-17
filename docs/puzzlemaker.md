@@ -55,5 +55,7 @@ Validation on the adapted branch: 210 Python tests (3 skipped), all 262 runtime
 checks, and the same 262 checks under UBSan passed. Preparing the real Linux
 compiler depot also succeeded.
 
-The adapted version still needs a fresh end-to-end in-game build before merge.
+The adapted version was subsequently tested in-game on the same Apple Silicon
+Mac: the tester confirmed both test builds worked and entered a saved chamber.
+The console also records a running `puzzlemaker/preview` chamber.
 No game binaries or generated game code belong in the repository.
