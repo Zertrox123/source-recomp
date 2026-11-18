@@ -745,6 +745,7 @@ static int signal_deliveries;
 static int child_probe(CPU *c, const char *name) {
     if (strcmp(name, "__sigchld_probe")) return 0;
     assert(R32(c->esp + 4) == 17);
+    assert(c->df == 0);  // cleared on delivery, as Linux does
     assert(rt_signal_blocked_mask() & (UINT64_C(1) << 16));
     int status;
     assert(waitpid(signal_child, &status, WNOHANG) == signal_child);
@@ -758,6 +759,13 @@ RT_CHECK(puzzlemaker_sigchld_delivers_exit_status_and_preserves_cpu) {
     uint32_t action = 0x2001f000;
     memset(GPTR(action), 0, 140);
     W32(action, rt_dynamic_import("__sigchld_probe"));
+    // SA_SIGINFO handlers expect siginfo_t and ucontext_t, which are not passed: guest trap.
+    W32(action + 132, 0x4);
+    pid_t refused = fork(); assert(refused >= 0);
+    if (!refused) { freopen("/dev/null", "w", stderr); call("sigaction", 3, 17u, action, 0u); _exit(0); }
+    int refused_status; assert(waitpid(refused, &refused_status, 0) == refused);
+    assert(WIFSIGNALED(refused_status) && WTERMSIG(refused_status) == SIGABRT);
+    W32(action + 132, 0);
     assert(call("sigaction", 3, 17u, action, 0u) == 0);
     uint32_t getpid_import = rt_dynamic_import("getpid");
     CPU c;
@@ -774,7 +782,7 @@ RT_CHECK(puzzlemaker_sigchld_delivers_exit_status_and_preserves_cpu) {
         if (!signal_child) _exit(23);
         for (int i = 0; i < 1000 && !atomic_load(&rt_sigchld_pending); ++i) usleep(1000);
         assert(atomic_load(&rt_sigchld_pending));
-        rt_cpu_reset(&c); c.esp = 0x2001e000; c.eax = 123; c.ebx = 456;
+        rt_cpu_reset(&c); c.esp = 0x2001e000; c.eax = 123; c.ebx = 456; c.df = 1;
         CPU before = c;
         rt_signal_set_blocked_mask(UINT64_C(1) << 16);
         rt_poll(&c);
