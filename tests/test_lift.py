@@ -212,10 +212,20 @@ class LifterTests(unittest.TestCase):
         # generated code still checks the real target).
         for at in ('x14', 'x19'):
             for change in (('mov', 'dword ptr [ebp + 0xc], ecx'), ('mov', 'word ptr [ebp + 0xe], cx'),
+                           ('movsd', 'qword ptr [ebp + 0x8], xmm0'),   # a wide store over the slot
                            ('mov', 'ebp, ecx'), ('mov', 'bp, cx'), ('mov', 'dword ptr [eax], ecx')):
                 with self.subTest(at=at, change=change):
                     self.assertEqual(tables_for(program(**{at: change}))(base + 0x28),
                                      [base + 0x30, base + 0x31, base + 0x32])
+        # After the jump any instruction may sit there: one with implicit effects
+        # (here on EBP) gives no bound either.
+        for change in (('leave', ''), ('xchg', 'ecx, ebp'), ('pop', 'ecx')):
+            with self.subTest(change=change):
+                self.assertEqual(tables_for(program(x19=change))(base + 0x28),
+                                 [base + 0x30, base + 0x31, base + 0x32])
+        # A store to another slot keeps it.
+        self.assertEqual(tables_for(program(x19=('mov', 'dword ptr [ebp - 0x10], ecx')))(base + 0x28),
+                         [base + 0x30, base + 0x31])
 
     def test_pic_jump_table_bounded_on_a_loaded_word(self):
         # HL2 server.so 0x9f20dc: `cmp [ebx], 0x50; ja; mov eax, [ebx];

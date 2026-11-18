@@ -1041,24 +1041,34 @@ class JumpTables:
     # Instructions that leave the flags alone: allowed between `cmp` and `ja`.
     FLAGLESS = frozenset({'mov', 'lea', 'movzx', 'movsx', 'movss', 'movsd', 'movaps', 'movd'})
 
-    @staticmethod
-    def frame_offset(operand):
-        """D of a memory operand `[ebp +- D]`; None for any other operand."""
-        m = re.fullmatch(r'(?:\w+ ptr )?\[ebp(?: ([+-]) (0x[0-9a-f]+))?\]', operand)
-        return (int(m[2], 16) * (-1 if m[1] == '-' else 1) if m[2] else 0) if m else None
+    PTR_BYTES = {'byte': 1, 'word': 2, 'dword': 4, 'qword': 8, 'xmmword': 16}
 
     @classmethod
-    def may_change(cls, op, destination, word):
-        """Whether an instruction with first operand `destination` may change the
-        memory operand `word` or a register of its address. Two stores are only
-        known apart as distinct `[ebp + D]` slots: any other one may alias."""
-        if op == 'cmp' or op.startswith('j'):
+    def frame_bytes(cls, operand):
+        """Offsets (a range) covered by a sized memory operand `S ptr [ebp +- D]`;
+        None for any other operand."""
+        m = re.fullmatch(r'(\w+) ptr \[ebp(?: ([+-]) (0x[0-9a-f]+))?\]', operand)
+        if not m or m[1] not in cls.PTR_BYTES:
+            return None
+        start = int(m[3], 16) * (-1 if m[2] == '-' else 1) if m[3] else 0
+        return range(start, start + cls.PTR_BYTES[m[1]])
+
+    @classmethod
+    def may_change(cls, op, operands, word):
+        """Whether an instruction may change the memory operand `word` or a
+        register of its address. Only an explicit first operand is trusted to
+        be the whole effect; two stores are only known apart as `[ebp + D]`
+        ranges that do not overlap: any other one may alias."""
+        if op in ('cmp', 'test', 'nop') or op.startswith('j'):
             return False   # they only read their operands
+        if len(operands) < 2 or op in cls.IMPLICIT_WRITES:
+            return True    # push, pop, mul, cdq...: implicit registers or memory
+        destination = operands[0]
         if destination in REGS:
             return REGS[destination][0] in {REGS[r][0] for r in re.findall(r'\b[a-z]\w*', word) if r in REGS}
         if '[' in destination:
-            mine, theirs = cls.frame_offset(word), cls.frame_offset(destination)
-            return mine is None or theirs is None or abs(mine - theirs) < 4
+            mine, theirs = cls.frame_bytes(word), cls.frame_bytes(destination)
+            return mine is None or theirs is None or max(mine.start, theirs.start) < min(mine.stop, theirs.stop)
         return False
 
     def bound(self, history, index):
@@ -1079,7 +1089,7 @@ class JumpTables:
                     source = parts[1]
                 else:
                     computed = True
-            elif source is not None and self.may_change(op, parts[0], source):
+            elif source is not None and self.may_change(op, parts, source):
                 return None
             if op in ('ja', 'jae', 'jnbe', 'jnb'):
                 return self.checked_limit(history, i, aliases, source)
@@ -1094,7 +1104,7 @@ class JumpTables:
         j = at + 1
         if source is not None:
             while j < len(history) and j <= at + self.MAX_NEUTRAL and history[j][2] in self.FLAGLESS:
-                if self.may_change(history[j][2], history[j][3].split(',')[0].strip(), source):
+                if self.may_change(history[j][2], [x.strip() for x in history[j][3].split(',')], source):
                     return None
                 j += 1
         if j >= len(history):
