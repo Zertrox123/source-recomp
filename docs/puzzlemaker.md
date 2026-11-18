@@ -17,8 +17,11 @@ python3 tools/build_puzzlemaker.py
 python3 tools/make_app.py --game portal2
 ```
 
-`setup.sh` also tries to build the compilers when the Linux depot contains
-`vbsp_linux`. The game installs without the compilers if they are unavailable.
+`./setup.sh --puzzle-maker` does the same. The compilers are opt-in because
+they add about ten minutes to the build and 220 MB to the app; without the
+option the editor opens, but Build and Play cannot compile the chamber. The
+game still installs if the Linux depot has no `vbsp_linux` or the compilers
+do not build.
 When the build succeeds, packaging includes
 `Contents/MacOS/portal2-map-compiler` and its matching images under
 `Contents/Resources/map-compiler/prep`. Keep these private, like the game binary.

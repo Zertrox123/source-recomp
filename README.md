@@ -142,6 +142,7 @@ git clone https://github.com/kanapitsas/source-recomp.git
 cd source-recomp
 ./setup.sh                    # every game found: Portal 2, Half-Life 2, Portal
 ./setup.sh --game hl2         # one game (portal2, hl2, portal1), or --game all
+./setup.sh --puzzle-maker     # Portal 2 with its map compilers, for the Puzzle Maker (docs/puzzlemaker.md)
 ./setup.sh "/path/to/Portal 2" "/path/to/depot_661"   # folders Steam did not put in the usual place
 ```
 
