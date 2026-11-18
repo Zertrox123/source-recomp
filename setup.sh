@@ -14,7 +14,7 @@
 # is built when Rust (https://rustup.rs) is installed, else taken prebuilt from
 # the same bundle. P2_NO_METAL=1 skips it: the game then uses OpenGL.
 #
-# usage: ./setup.sh [--game portal2|hl2|portal1|all] [--ios]
+# usage: ./setup.sh [--game portal2|hl2|portal1|all] [--ios] [--puzzle-maker]
 #        ./setup.sh [--ios] ["/path/to/Portal 2" ["/path/to/depot_661"]]
 #        ./setup.sh --game hl2 ["/path/to/Half-Life 2" ["/path/to/depot_224"]]
 #        ./setup.sh --game portal1 ["/path/to/Portal" ["/path/to/depot_404"]]
@@ -28,6 +28,10 @@
 # Portal 1): adding one never rebuilds another. Paths are for one game; without
 # --game, a folder with hl2_complete/ is taken for Half-Life 2, one with
 # portal/gameinfo.txt for Portal 1, anything else for Portal 2.
+#
+# --puzzle-maker also builds Portal 2's map compilers (VBSP, VVIS, VRAD), which
+# the Puzzle Maker needs to build a chamber: about ten more minutes and 220 MB
+# in the app (docs/puzzlemaker.md).
 #
 # P2_APP_DIR puts the apps elsewhere than ~/Applications.
 # Re-running is safe: finished steps are skipped and unchanged code is not
@@ -50,6 +54,7 @@ DEPS="${P2_DEPS:-$REPO/deps}"
 CONFIG="$REPO/config/local.json"
 IOS=0
 DETECT=0
+PUZZLE_MAKER=0
 GAME_OPT=""
 ARGS=()
 while [ $# -gt 0 ]; do
@@ -57,6 +62,7 @@ while [ $# -gt 0 ]; do
     case "$a" in
         --ios) IOS=1 ;;
         --detect) DETECT=1 ;;
+        --puzzle-maker) PUZZLE_MAKER=1 ;;
         --game) [ $# -gt 0 ] || { echo "--game needs a value: portal2, hl2, portal1 or all" >&2; exit 2; }
                 GAME_OPT="$1"; shift ;;
         --game=*) GAME_OPT="${a#--game=}" ;;
@@ -71,6 +77,9 @@ GIVEN_LINUX="${ARGS[1]:-}"
 case "$GAME_OPT" in
     ""|portal2|hl2|portal1|all) ;;
     *) echo "unknown game $GAME_OPT: use --game portal2, hl2, portal1 or all" >&2; exit 2 ;;
+esac
+case "$PUZZLE_MAKER$GAME_OPT" in
+    1hl2|1portal1) echo "--puzzle-maker is for Portal 2: drop it or the --game $GAME_OPT" >&2; exit 2 ;;
 esac
 if [ "$GAME_OPT" = all ] && [ -n "$GIVEN_GAME" ]; then
     echo "paths are for one game: use --game portal2, --game hl2 or --game portal1 with them" >&2; exit 2
@@ -593,11 +602,13 @@ for i in "${!SELECTED[@]}"; do
     python3 tools/build_game.py --game "$id" --release
     app_args=(--game "$id" --dest "$APP_DIR")
     if [ "$id" = portal2 ]; then
-        if [ ! -f "${LINUX_DIRS[$i]}/bin/linux32/vbsp_linux" ]; then
+        if [ $PUZZLE_MAKER = 0 ]; then
+            app_args+=(--no-map-compiler)  # not even ones left by an earlier build: they may be stale
+        elif [ ! -f "${LINUX_DIRS[$i]}/bin/linux32/vbsp_linux" ]; then
             warn "vbsp_linux is missing: installing Portal 2 without the Puzzle Maker map compilers"
             app_args+=(--no-map-compiler)
         else
-            step "Building the Puzzle Maker map compilers"
+            step "Building the Puzzle Maker map compilers (about 10 minutes the first time)"
             if ! python3 tools/build_puzzlemaker.py; then
                 warn "Puzzle Maker map compilers did not build: continuing with the Portal 2 installation"
                 app_args+=(--no-map-compiler)

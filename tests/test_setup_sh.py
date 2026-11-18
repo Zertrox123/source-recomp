@@ -41,6 +41,7 @@ class SetupScriptTests(unittest.TestCase):
                               (['--game', 'quake'], 'unknown game quake'),
                               (['--game=quake'], 'unknown game quake'),
                               (['--game', 'all', '/a'], 'paths are for one game'),
+                              (['--game', 'hl2', '--puzzle-maker'], '--puzzle-maker is for Portal 2'),
                               (['/a', '/b', '/c'], 'too many arguments')):
             result = run_setup(*args)
             self.assertEqual(result.returncode, 2, args)
