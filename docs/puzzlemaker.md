@@ -17,7 +17,8 @@ python3 tools/build_puzzlemaker.py
 python3 tools/make_app.py --game portal2
 ```
 
-`./setup.sh --puzzle-maker` does the same. The compilers are opt-in because
+`./setup.sh --puzzle-maker` does the same, and so does the Puzzle Maker box
+under Portal 2 in the installer app. The compilers are opt-in because
 they add about ten minutes to the build and 220 MB to the app; without the
 option the editor opens, but Build and Play cannot compile the chamber. The
 game still installs if the Linux depot has no `vbsp_linux` or the compilers

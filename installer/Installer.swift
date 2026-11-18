@@ -34,6 +34,7 @@ struct Game: Identifiable, Equatable {
     let installFolder: String   // under steamapps/common
     let linuxFiles: [String]    // files of the Linux depot (setup.sh's checks)
     let minutes: Int
+    var mapCompiler: String? = nil   // Linux depot file of the Puzzle Maker's map compilers (setup.sh --puzzle-maker)
 
     var appName: String { "\(title) Natif" }
     var installedApp: URL { home.appendingPathComponent("Applications/\(appName).app") }
@@ -56,6 +57,10 @@ struct Game: Identifiable, Equatable {
     func isLinuxDepot(_ url: URL) -> Bool {
         linuxFiles.allSatisfy { FileManager.default.fileExists(atPath: url.appendingPathComponent($0).path) }
     }
+    func hasMapCompiler(_ linux: URL?) -> Bool {
+        guard let mapCompiler, let linux else { return false }
+        return FileManager.default.fileExists(atPath: linux.appendingPathComponent(mapCompiler).path)
+    }
     func findGame() -> URL? {
         let installed = steamSupport.appendingPathComponent("steamapps/common/\(installFolder)")
         let candidates = [installed, findDepot(appID, dataDepot)].compactMap { $0 }.filter(isGameFolder)
@@ -67,10 +72,13 @@ struct Game: Identifiable, Equatable {
     }
 }
 
+let mapCompilerMinutes = 10
+
 let allGames = [
     Game(id: "portal2", title: "Portal 2", appID: 620, dataDepot: 621, linuxDepot: 661, linuxSize: "about 90 MB",
          marker: "portal2", markerFile: "portal2/pak01_dir.vpk", installFolder: "Portal 2",
-         linuxFiles: ["bin/linux32/engine.so", "portal2/bin/linux32/server.so"], minutes: 10),
+         linuxFiles: ["bin/linux32/engine.so", "portal2/bin/linux32/server.so"], minutes: 10,
+         mapCompiler: "bin/linux32/vbsp_linux"),
     Game(id: "hl2", title: "Half-Life 2", appID: 220, dataDepot: 221, linuxDepot: 224, linuxSize: "about 320 MB",
          marker: "hl2_complete", markerFile: "hl2_complete/gameinfo.txt", installFolder: "Half-Life 2",
          linuxFiles: ["hl2_linux", "bin/engine.so", "hl2_complete/bin/server.so"], minutes: 20),
@@ -144,15 +152,21 @@ final class Installer: ObservableObject {
     @Published var log: [String] = []
     @Published var warnings: [String] = []
     @Published var showLog = false
+    @Published var puzzleMaker = false   // the user's wish; buildsMapCompilers says whether it applies
     private var process: Process?
     private var timer: Timer?
     private var queue: [Game] = []       // games still to build in this run
     private var runCount = 1, runIndex = 0
+    private var runHasMapCompilers = false   // the current setup.sh run also builds them
 
     func state(_ game: Game) -> GameState { states[game.id] ?? GameState() }
     var chosen: [Game] { allGames.filter { state($0).selected && state($0).ready } }
     var canInstall: Bool { tools && !chosen.isEmpty && phase != .installing }
     var built: [Game] { allGames.filter { state($0).built } }
+    func buildsMapCompilers(_ game: Game) -> Bool {
+        puzzleMaker && state(game).selected && game.hasMapCompiler(state(game).linux)
+    }
+    var minutes: Int { chosen.map { $0.minutes + (buildsMapCompilers($0) ? mapCompilerMinutes : 0) }.reduce(0, +) }
 
     func setSelected(_ game: Game, _ on: Bool) {
         states[game.id]?.selected = on
@@ -251,7 +265,9 @@ final class Installer: ObservableObject {
     private func runSetup(game: Game, gameDir: URL, linux: URL) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
-        p.arguments = [sourceDir.appendingPathComponent("setup.sh").path, "--game", game.id, gameDir.path, linux.path]
+        runHasMapCompilers = buildsMapCompilers(game)
+        p.arguments = [sourceDir.appendingPathComponent("setup.sh").path, "--game", game.id]
+            + (runHasMapCompilers ? ["--puzzle-maker"] : []) + [gameDir.path, linux.path]
         p.currentDirectoryURL = sourceDir
         var env = ProcessInfo.processInfo.environment
         // A Finder app gets a bare PATH: add Rust's and Homebrew's, used when present.
@@ -299,20 +315,26 @@ final class Installer: ObservableObject {
     }
 
     /// Progress from setup.sh's output: its steps, then build_game.py's
-    /// "lifted a/b jobs" (10-35 %) and "compiled a/b files" (35-95 %).
-    static func progress(after line: String, from current: Double) -> Double {
+    /// "lifted a/b jobs" (10-35 %) and "compiled a/b files" (35-95 %). With the
+    /// map compilers, a second build follows the game's: the game then fills
+    /// 10-55 % and the compilers 55-95 %, each split the same way.
+    static func progress(after line: String, from current: Double, mapCompilers: Bool = false) -> Double {
         func fraction(_ prefix: String) -> Double? {
             guard let r = line.range(of: prefix) else { return nil }
             let parts = line[r.upperBound...].prefix { $0 != " " && $0 != "," }.split(separator: "/")
             guard parts.count == 2, let a = Double(parts[0]), let b = Double(parts[1]), b > 0 else { return nil }
             return min(a / b, 1)
         }
+        let first = 0.10, last = 0.95, middle = mapCompilers ? 0.55 : last
+        let (start, end) = mapCompilers && current >= middle ? (middle, last) : (first, middle)
+        let lifted = start + (end - start) * 0.25 / 0.85
         var value = current
-        if line.hasPrefix("==> Recompiling") { value = 0.10 }
-        else if line.hasPrefix("==> Creating") { value = 0.95 }
-        else if line.hasPrefix("==> ") { value = min(current + 0.012, 0.10) }
-        else if let f = fraction("lifted ") { value = 0.10 + 0.25 * f }
-        else if let f = fraction("compiled ") { value = 0.35 + 0.60 * f }
+        if line.hasPrefix("==> Recompiling") { value = first }
+        else if line.hasPrefix("==> Building the Puzzle Maker") { value = middle }
+        else if line.hasPrefix("==> Creating") { value = last }
+        else if line.hasPrefix("==> ") { value = min(current + 0.012, first) }
+        else if let f = fraction("lifted ") { value = start + (lifted - start) * f }
+        else if let f = fraction("compiled ") { value = lifted + (end - lifted) * f }
         return max(current, value)
     }
 
@@ -321,7 +343,7 @@ final class Installer: ObservableObject {
             // Each game's run fills its own share of the bar.
             let share = 1.0 / Double(max(runCount, 1)), base = Double(runIndex) * share
             let inRun = min(max((progress - base) / share, 0), 1)
-            progress = base + share * Installer.progress(after: line, from: inRun)
+            progress = base + share * Installer.progress(after: line, from: inRun, mapCompilers: runHasMapCompilers)
             if line.hasPrefix("==> ") {
                 step = String(line.dropFirst(4))
             } else if line.hasPrefix("warning: ") {
@@ -525,6 +547,15 @@ struct GameRow: View {
                         }
                     }
                 }
+                if game.mapCompiler != nil, s.ready {
+                    let available = game.hasMapCompiler(s.linux)
+                    Toggle(available ? "Puzzle Maker: also build the map compilers (about \(mapCompilerMinutes) more minutes, 220 MB)"
+                                     : "Puzzle Maker: unavailable, no \((game.mapCompiler! as NSString).lastPathComponent) in these Linux binaries",
+                           isOn: Binding(get: { model.puzzleMaker && available }, set: { model.puzzleMaker = $0 }))
+                        .toggleStyle(.checkbox)
+                        .disabled(!available || !s.selected || model.phase == .installing)
+                        .help("Needed for Build and Play in Community Test Chambers. Without them the editor opens, but a chamber cannot be built.")
+                }
             }
             .padding(.leading, 20)
             .font(.callout).foregroundStyle(.secondary)
@@ -575,9 +606,8 @@ struct ContentView: View {
         switch model.phase {
         case .ready:
             let games = model.chosen
-            let minutes = games.map(\.minutes).reduce(0, +)
             Text(games.isEmpty ? "Tick at least one game found above."
-                 : "About \(minutes) minutes the first time and \(5 * games.count) GB of disk. Re-running later only rebuilds what changed.")
+                 : "About \(model.minutes) minutes the first time and \(5 * games.count) GB of disk. Re-running later only rebuilds what changed.")
         case .installing:
             ProgressView(value: model.progress)
             Text(model.step).lineLimit(1)
@@ -659,6 +689,7 @@ func snapshot(to path: String, state: String) {
     case "incomplete":
         model.states["portal2"]?.dataIssue = "Incomplete game data: portal2_dlc2/scripts/editoritems.txt is missing, unreadable or empty. An empty placeholder does not help. In Steam, verify the integrity of Portal 2's files (Properties > Installed Files), choose a complete game folder, or download the game data below:"
         model.states["portal2"]?.selected = false
+    case "puzzlemaker": model.puzzleMaker = true
     case "building": model.phase = .installing
         model.step = "Recompiling Portal 2 (about 10 minutes the first time, seconds afterwards)"; model.progress = 0.25
         model.showLog = true; model.log = ["==> Preparing the Linux modules of Portal 2", "[lift] engine.so: 41 233 functions", "[cc] 312/1024"]
@@ -690,6 +721,12 @@ enum Main {
                          "==> Recompiling again", "==> Creating ~/Applications/Portal 2 Natif.app"] {
                 p = Installer.progress(after: line, from: p)
                 print(String(format: "%.3f", p), line)
+            }
+            p = 0.0
+            for line in ["==> Recompiling Portal 2", "  compiled 330/330 files, 600 s", "==> Building the Puzzle Maker map compilers",
+                         "  lifted 4/4 jobs: 1 functions", "  compiled 50/100 files, 60 s", "==> Creating ~/Applications/Portal 2 Natif.app"] {
+                p = Installer.progress(after: line, from: p, mapCompilers: true)
+                print(String(format: "%.3f", p), line, "(map compilers)")
             }
             return
         }
