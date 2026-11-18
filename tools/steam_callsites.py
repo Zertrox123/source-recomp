@@ -17,8 +17,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('layout', type=Path, help='prepared layout (build/game/prep/layout.json)')
     ap.add_argument('--objdump', default='objdump')
-    args = ap.parse_args(argv)
-    L = lift.load_layout(args.layout)
+    options = ap.parse_args(argv)
+    L = lift.load_layout(options.layout)
     imp = {i['name']: i['addr'] for i in L['imports']}
     CI = hex(imp['SteamInternal_ContextInit'])
     CREATORS = {hex(imp[n]) for n in ('SteamInternal_FindOrCreateUserInterface', 'SteamInternal_FindOrCreateGameServerInterface', 'SteamInternal_CreateInterface') if n in imp}
@@ -36,7 +36,7 @@ def main(argv=None):
         def cstr(a):
             o = at(a)
             return data[o:data.index(b'\0', o)].decode('latin1') if o is not None else None
-        ins = lift.disassemble(m['image'], m['base'], args.objdump)
+        ins = lift.disassemble(m['image'], m['base'], options.objdump)
         pcs = sorted(ins)
         def version_of_init(fn):
             pc, last = fn, None
