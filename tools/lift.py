@@ -1077,30 +1077,33 @@ class JumpTables:
         `history` runs backwards from the table load. The check may also be on
         the word the index was loaded from (`cmp dword ptr [S], N; ja; mov I,
         dword ptr [S]`) while nothing between may change it."""
-        aliases, source, computed = {index}, None, False
+        register, source = index, None   # where the checked value lives, going back
         for i, (_, _, op, args) in enumerate(history):
             parts = [x.strip() for x in args.split(',')]
-            if op == 'movzx' and len(parts) == 2 and REGS.get(parts[0], ('',))[0] in aliases and parts[1] in REGS:
-                aliases.add(REGS[parts[1]][0])
-            if source is None and not computed and REGS.get(parts[0], ('',))[0] == index:
-                # The last write of the index: a plain load gives a word to follow back.
-                if (op == 'mov' and len(parts) == 2 and parts[0] == index
+            if op in ('ja', 'jae', 'jnbe', 'jnb'):
+                return self.checked_limit(history, i, register, source)
+            if op in ('call', 'ret', 'jmp') or op.startswith('j') or op in self.IMPLICIT_WRITES:
+                return None
+            if source is not None:
+                if self.may_change(op, parts, source):
+                    return None
+            elif op not in ('cmp', 'test', 'push') and REGS.get(parts[0], ('',))[0] == register:
+                # The index is written after the check: the bound still holds for a
+                # zero-extension (of its source register) and for a plain load (of
+                # the word, if that is what the check compares).
+                if op == 'movzx' and len(parts) == 2 and parts[1] in REGS:
+                    register = REGS[parts[1]][0]
+                elif (op == 'mov' and len(parts) == 2 and parts[0] == register
                         and parts[1].startswith('dword ptr [') and 'esp' not in parts[1]):
                     source = parts[1]
                 else:
-                    computed = True
-            elif source is not None and self.may_change(op, parts, source):
-                return None
-            if op in ('ja', 'jae', 'jnbe', 'jnb'):
-                return self.checked_limit(history, i, aliases, source)
-            if op in ('call', 'ret', 'jmp') or op.startswith('j'):
-                return None
+                    return None
         return None
 
-    def checked_limit(self, history, at, aliases, source):
-        """Bound of the unsigned jump history[at] from the `cmp` it tests: on a
-        register of `aliases` right before it, or on the word `source` with up
-        to MAX_NEUTRAL flag-neutral moves between that leave the word alone."""
+    def checked_limit(self, history, at, register, source):
+        """Bound of the unsigned jump history[at] from the `cmp` it tests: on
+        `register` right before it, or on the word `source` with up to
+        MAX_NEUTRAL flag-neutral moves between that leave the word alone."""
         j = at + 1
         if source is not None:
             while j < len(history) and j <= at + self.MAX_NEUTRAL and history[j][2] in self.FLAGLESS:
@@ -1113,11 +1116,11 @@ class JumpTables:
         parts = [x.strip() for x in args.split(',')]
         if op != 'cmp' or len(parts) != 2:
             return None
-        if j == at + 1 and parts[0] in REGS and REGS[parts[0]][0] in aliases:
-            width = REGS[parts[0]][1]
-        elif parts[0] == source:
-            width = 32
+        if source is not None:
+            width = 32 if parts[0] == source else None
         else:
+            width = REGS[parts[0]][1] if parts[0] in REGS and REGS[parts[0]][0] == register else None
+        if not width:
             return None
         try:
             limit = int(parts[1], 0) & MSK_BITS[width]

@@ -252,6 +252,29 @@ class LifterTests(unittest.TestCase):
         tables, jump = tables_for([('mov', 'dword ptr [esi], 0x0')])
         self.assertEqual(tables(jump), [base + 0x100 + i for i in range(0x52)])
 
+    def test_switch_bound_is_dropped_when_the_index_is_rewritten(self):
+        # `cmp esi, 0x1; ja; <esi rewritten>; mov eax, [ebx + 4*esi - D]`: the check
+        # was on the old value. A zero-extension keeps it, any other write does not.
+        got, base = 0x10020000, 0x10000000
+        entries = {got - 0x100 + 4 * i: base + 0x30 + i - got for i in range(3)}
+        module = {'gotplt': got}
+        def targets(rewrite):
+            insns = {0x10: (0x13, 'cmp', 'esi, 0x1'), 0x13: (0x15, 'ja', hex(base + 0x40)),
+                     0x15: (0x18, *rewrite),
+                     0x18: (0x1f, 'mov', 'eax, dword ptr [ebx + 4*esi - 0x100]'), 0x1f: (0x21, 'add', 'eax, ebx'),
+                     0x21: (0x23, 'jmp', 'eax'), 0x30: (0x31, 'ret', ''), 0x31: (0x32, 'ret', ''),
+                     0x32: (0x33, 'ret', ''), 0x40: (0x41, 'ret', '')}
+            tables = lift.JumpTables({'modules': []}, {pc + base: (nxt + base, op, args)
+                                                       for pc, (nxt, op, args) in insns.items()})
+            tables.module = lambda address: module
+            tables.read32 = lambda address: (entries[address] & 0xffffffff) if address in entries else None
+            return [target - base for target in tables(base + 0x21)]
+        self.assertEqual(targets(('mov', 'ecx, edx')), [0x30, 0x31])
+        self.assertEqual(targets(('movzx', 'esi, si')), [0x30, 0x31])
+        for rewrite in (('mov', 'esi, dword ptr [ecx]'), ('mov', 'esi, ecx'), ('add', 'esi, 0x1'), ('pop', 'esi')):
+            with self.subTest(rewrite=rewrite):
+                self.assertEqual(targets(rewrite), [0x30, 0x31, 0x32])
+
     def test_pic_jump_table_with_prescaled_index(self):
         # HL2 shaderapivk.so 0x25299: `mov ecx, [edi + ebx - D]; add ecx, edi; jmp ecx`,
         # EBX = 4*index computed in another block: entries read while they are code.
