@@ -942,6 +942,7 @@ class JumpTables:
       jmp dword ptr [4*I + T]                          absolute table (relocated)
       mov R, dword ptr [B + 4*I + D]; add R, B; jmp R  PIC table of GOT offsets, B = GOT
       add R, dword ptr [R + 4*I + D]; jmp R            same, fused (R = GOT)
+      mov R, B; add R, dword ptr [B + 4*I + D]; jmp R  same, R a copy of B
       mov R, dword ptr [B + I + D]; add R, B; jmp R    same, I already scaled (bound unknown)
     with up to MAX_NEUTRAL unrelated moves scheduled between the PIC steps.
     The bound comes from a preceding `cmp I, N; ja/jae`; otherwise entries are
@@ -1037,26 +1038,107 @@ class JumpTables:
         index = m[2] if m[1] == base_register else m[1]
         return index, False, int(m[4], 16) * (-1 if m[3] == '-' else 1)
 
+    # Instructions that leave the flags alone: allowed between `cmp` and `ja`.
+    FLAGLESS = frozenset({'mov', 'lea', 'movzx', 'movsx', 'movss', 'movsd', 'movaps', 'movd'})
+
+    PTR_BYTES = {'byte': 1, 'word': 2, 'dword': 4, 'qword': 8, 'xmmword': 16}
+
+    @classmethod
+    def frame_bytes(cls, operand):
+        """Offsets (a range) covered by a sized memory operand `S ptr [ebp +- D]`;
+        None for any other operand."""
+        m = re.fullmatch(r'(\w+) ptr \[ebp(?: ([+-]) (0x[0-9a-f]+))?\]', operand)
+        if not m or m[1] not in cls.PTR_BYTES:
+            return None
+        start = int(m[3], 16) * (-1 if m[2] == '-' else 1) if m[3] else 0
+        return range(start, start + cls.PTR_BYTES[m[1]])
+
+    @classmethod
+    def may_change(cls, op, operands, word):
+        """Whether an instruction may change the memory operand `word` or a
+        register of its address. Only an explicit first operand is trusted to
+        be the whole effect; two stores are only known apart as `[ebp + D]`
+        ranges that do not overlap: any other one may alias."""
+        if op in ('cmp', 'test', 'nop') or op.startswith('j'):
+            return False   # they only read their operands
+        if len(operands) < 2 or op in cls.IMPLICIT_WRITES:
+            return True    # push, pop, mul, cdq...: implicit registers or memory
+        destination = operands[0]
+        if destination in REGS:
+            return REGS[destination][0] in {REGS[r][0] for r in re.findall(r'\b[a-z]\w*', word) if r in REGS}
+        if '[' in destination:
+            mine, theirs = cls.frame_bytes(word), cls.frame_bytes(destination)
+            return mine is None or theirs is None or max(mine.start, theirs.start) < min(mine.stop, theirs.stop)
+        return False
+
     def bound(self, history, index):
-        """Number of table entries implied by `cmp index, N; ja` (None if unknown)."""
-        aliases = {index}
+        """Number of table entries implied by `cmp index, N; ja` (None if unknown).
+
+        `history` runs backwards from the table load. The check may also be on
+        the word the index was loaded from (`cmp dword ptr [S], N; ja; mov I,
+        dword ptr [S]`) while nothing between may change it."""
+        register, source = index, None   # where the checked value lives, going back
         for i, (_, _, op, args) in enumerate(history):
             parts = [x.strip() for x in args.split(',')]
-            if op == 'movzx' and len(parts) == 2 and REGS.get(parts[0], ('',))[0] in aliases and parts[1] in REGS:
-                aliases.add(REGS[parts[1]][0])
-            if op in ('ja', 'jae', 'jnbe', 'jnb') and i + 1 < len(history):
-                _, _, cop, cargs = history[i + 1]
-                cparts = [x.strip() for x in cargs.split(',')]
-                if cop == 'cmp' and len(cparts) == 2 and cparts[0] in REGS and REGS[cparts[0]][0] in aliases:
-                    try:
-                        limit = int(cparts[1], 0) & MSK_BITS[REGS[cparts[0]][1]]
-                    except ValueError:
-                        return None
-                    return limit + 1 if op in ('ja', 'jnbe') else limit
+            if op in ('ja', 'jae', 'jnbe', 'jnb'):
+                return self.checked_limit(history, i, register, source)
+            if op in ('call', 'ret', 'jmp') or op.startswith('j') or op in self.IMPLICIT_WRITES:
                 return None
-            if op in ('call', 'ret', 'jmp') or op.startswith('j'):
-                return None
+            if source is not None:
+                if self.may_change(op, parts, source):
+                    return None
+            elif op not in ('cmp', 'test', 'push') and REGS.get(parts[0], ('',))[0] == register:
+                # The index is written after the check: the bound still holds for a
+                # zero-extension (of its source register) and for a plain load (of
+                # the word, if that is what the check compares).
+                if op == 'movzx' and len(parts) == 2 and parts[1] in REGS:
+                    register = REGS[parts[1]][0]
+                elif (op == 'mov' and len(parts) == 2 and parts[0] == register
+                        and parts[1].startswith('dword ptr [') and 'esp' not in parts[1]):
+                    source = parts[1]
+                else:
+                    return None
         return None
+
+    def checked_limit(self, history, at, register, source):
+        """Bound of the unsigned jump history[at] from the `cmp` it tests: on
+        `register` right before it, or on the word `source` with up to
+        MAX_NEUTRAL flag-neutral moves between that leave the word alone."""
+        j = at + 1
+        if source is not None:
+            while j < len(history) and j <= at + self.MAX_NEUTRAL and history[j][2] in self.FLAGLESS:
+                if self.may_change(history[j][2], [x.strip() for x in history[j][3].split(',')], source):
+                    return None
+                j += 1
+        if j >= len(history):
+            return None
+        _, _, op, args = history[j]
+        parts = [x.strip() for x in args.split(',')]
+        if op != 'cmp' or len(parts) != 2:
+            return None
+        if source is not None:
+            width = 32 if parts[0] == source else None
+        else:
+            width = REGS[parts[0]][1] if parts[0] in REGS and REGS[parts[0]][0] == register else None
+        if not width:
+            return None
+        try:
+            limit = int(parts[1], 0) & MSK_BITS[width]
+        except ValueError:
+            return None
+        return limit + 1 if history[at][2] in ('ja', 'jnbe') else limit
+
+    def load_on_copy(self, history, start, register, operand):
+        """Table load of `mov R, B; add R, dword ptr [B + 4*I +- D]` (R = register,
+        operand the memory one), the copy found from history[start] past
+        neutral moves; None otherwise. HL2/Portal client.so save/restore switch."""
+        m = _PIC_TABLE_LOAD.fullmatch(operand)
+        if not m or m[1] == register:
+            return None
+        at = self.skip_neutral(history, start, {register, m[1], m[2]})
+        if at is None or history[at][2] != 'mov' or [x.strip() for x in history[at][3].split(',')] != [register, m[1]]:
+            return None
+        return self.table_load(operand, m[1])
 
     def __call__(self, pc):
         if self.insns[pc][1] != 'jmp':
@@ -1083,11 +1165,9 @@ class JumpTables:
             add = [x.strip() for x in add_args.split(',', 1)]
             if not (add_op == 'add' and len(add) == 2 and add[0] == args):
                 return None
-            fused = self.table_load(add[1], args)
-            if fused:
-                # `add R, [R + 4*I - D]; jmp R`: R already holds the GOT.
-                load = fused
-            else:
+            # Fused forms `add R, [B + 4*I - D]`: B is R itself, or R a copy of B.
+            load = self.table_load(add[1], args) or self.load_on_copy(history, at + 1, args, add[1])
+            if not load:
                 if add[1] not in REGS:
                     return None
                 at = self.skip_neutral(history, at + 1, {args, add[1]})

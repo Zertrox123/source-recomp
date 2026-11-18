@@ -178,6 +178,103 @@ class LifterTests(unittest.TestCase):
         other.module, other.read32 = tables.module, tables.read32
         self.assertIsNone(other(base + 0x1c))
 
+    def test_pic_jump_table_on_a_copy_of_the_got(self):
+        # HL2 client.so 0x5a0416 (save/restore field switch; Portal 1 issue #44):
+        # `cmp [ebp + 0xc], N; mov [ebp - 0x34], eax; ja; mov edx, [ebp + 0xc];
+        # mov eax, ebx; add eax, [ebx + 4*edx - D]; jmp eax`. The bound is the
+        # one checked on the stack slot, so the next table is not read.
+        got, base = 0x10020000, 0x10000000
+        def program(**changes):
+            insns = {0x10: (0x14, 'cmp', 'dword ptr [ebp + 0xc], 0x1'),
+                     0x14: (0x17, 'mov', 'dword ptr [ebp - 0x34], eax'),   # between cmp and ja
+                     0x17: (0x19, 'ja', hex(base + 0x40)),
+                     0x19: (0x1c, 'mov', 'ecx, dword ptr [ebp - 0x10]'),   # between ja and the load
+                     0x1c: (0x1f, 'mov', 'edx, dword ptr [ebp + 0xc]'), 0x1f: (0x21, 'mov', 'eax, ebx'),
+                     0x21: (0x28, 'add', 'eax, dword ptr [ebx + 4*edx - 0x100]'), 0x28: (0x2a, 'jmp', 'eax'),
+                     0x30: (0x31, 'ret', ''), 0x31: (0x32, 'ret', ''), 0x32: (0x33, 'ret', ''),
+                     0x40: (0x41, 'ret', '')}
+            for pc, (op, args) in changes.items():
+                insns[int(pc[1:], 16)] = (insns[int(pc[1:], 16)][0], op, args)
+            return {pc + base: (nxt + base, op, args) for pc, (nxt, op, args) in insns.items()}
+        module = {'gotplt': got}
+        # Third entry: the next table, a valid code address too.
+        entries = {got - 0x100: base + 0x30 - got, got - 0xfc: base + 0x31 - got, got - 0xf8: base + 0x32 - got}
+        def tables_for(insns):
+            tables = lift.JumpTables({'modules': []}, insns)
+            tables.module = lambda address: module
+            tables.read32 = lambda address: (entries[address] & 0xffffffff) if address in entries else None
+            return tables
+        self.assertEqual(tables_for(program())(base + 0x28), [base + 0x30, base + 0x31])
+        # Without the copy, a foreign base is still refused.
+        self.assertIsNone(tables_for(program(x1f=('mov', 'eax, ecx')))(base + 0x28))
+        # The slot or its address register may change after the check, before or
+        # after the jump: no bound, entries read while they are code (the
+        # generated code still checks the real target).
+        for at in ('x14', 'x19'):
+            for change in (('mov', 'dword ptr [ebp + 0xc], ecx'), ('mov', 'word ptr [ebp + 0xe], cx'),
+                           ('movsd', 'qword ptr [ebp + 0x8], xmm0'),   # a wide store over the slot
+                           ('mov', 'ebp, ecx'), ('mov', 'bp, cx'), ('mov', 'dword ptr [eax], ecx')):
+                with self.subTest(at=at, change=change):
+                    self.assertEqual(tables_for(program(**{at: change}))(base + 0x28),
+                                     [base + 0x30, base + 0x31, base + 0x32])
+        # After the jump any instruction may sit there: one with implicit effects
+        # (here on EBP) gives no bound either.
+        for change in (('leave', ''), ('xchg', 'ecx, ebp'), ('pop', 'ecx')):
+            with self.subTest(change=change):
+                self.assertEqual(tables_for(program(x19=change))(base + 0x28),
+                                 [base + 0x30, base + 0x31, base + 0x32])
+        # A store to another slot keeps it.
+        self.assertEqual(tables_for(program(x19=('mov', 'dword ptr [ebp - 0x10], ecx')))(base + 0x28),
+                         [base + 0x30, base + 0x31])
+
+    def test_pic_jump_table_bounded_on_a_loaded_word(self):
+        # HL2 server.so 0x9f20dc: `cmp [ebx], 0x50; ja; mov eax, [ebx];
+        # mov edx, [ecx + 4*eax - D]; add edx, ecx; jmp edx`: the check is on
+        # the word the index is loaded from, not on a stack slot.
+        got, base = 0x10020000, 0x10000000
+        def tables_for(between):
+            steps = ([('cmp', 'dword ptr [ebx], 0x50'), ('ja', hex(base + 0x400))] + between
+                     + [('mov', 'eax, dword ptr [ebx]'), ('mov', 'edx, dword ptr [ecx + 4*eax - 0x200]'),
+                        ('add', 'edx, ecx'), ('jmp', 'edx')])
+            insns = {base + 0x10 + i: (base + 0x11 + i, op, args) for i, (op, args) in enumerate(steps)}
+            insns.update({base + 0x100 + i: (base + 0x101 + i, 'ret', '') for i in range(0x53)})
+            insns[base + 0x400] = (base + 0x401, 'ret', '')
+            tables = lift.JumpTables({'modules': []}, insns)
+            module = {'gotplt': got}
+            tables.module = lambda address: module
+            # One entry past the bound, the next table: still code.
+            entries = {got - 0x200 + 4 * i: base + 0x100 + i - got for i in range(0x52)}
+            tables.read32 = lambda address: (entries[address] & 0xffffffff) if address in entries else None
+            return tables, base + 0x10 + len(steps) - 1
+        tables, jump = tables_for([])
+        self.assertEqual(tables(jump), [base + 0x100 + i for i in range(0x51)])
+        # Any store not to a distinct [ebp + D] slot may alias [ebx]: no bound.
+        tables, jump = tables_for([('mov', 'dword ptr [esi], 0x0')])
+        self.assertEqual(tables(jump), [base + 0x100 + i for i in range(0x52)])
+
+    def test_switch_bound_is_dropped_when_the_index_is_rewritten(self):
+        # `cmp esi, 0x1; ja; <esi rewritten>; mov eax, [ebx + 4*esi - D]`: the check
+        # was on the old value. A zero-extension keeps it, any other write does not.
+        got, base = 0x10020000, 0x10000000
+        entries = {got - 0x100 + 4 * i: base + 0x30 + i - got for i in range(3)}
+        module = {'gotplt': got}
+        def targets(rewrite):
+            insns = {0x10: (0x13, 'cmp', 'esi, 0x1'), 0x13: (0x15, 'ja', hex(base + 0x40)),
+                     0x15: (0x18, *rewrite),
+                     0x18: (0x1f, 'mov', 'eax, dword ptr [ebx + 4*esi - 0x100]'), 0x1f: (0x21, 'add', 'eax, ebx'),
+                     0x21: (0x23, 'jmp', 'eax'), 0x30: (0x31, 'ret', ''), 0x31: (0x32, 'ret', ''),
+                     0x32: (0x33, 'ret', ''), 0x40: (0x41, 'ret', '')}
+            tables = lift.JumpTables({'modules': []}, {pc + base: (nxt + base, op, args)
+                                                       for pc, (nxt, op, args) in insns.items()})
+            tables.module = lambda address: module
+            tables.read32 = lambda address: (entries[address] & 0xffffffff) if address in entries else None
+            return [target - base for target in tables(base + 0x21)]
+        self.assertEqual(targets(('mov', 'ecx, edx')), [0x30, 0x31])
+        self.assertEqual(targets(('movzx', 'esi, si')), [0x30, 0x31])
+        for rewrite in (('mov', 'esi, dword ptr [ecx]'), ('mov', 'esi, ecx'), ('add', 'esi, 0x1'), ('pop', 'esi')):
+            with self.subTest(rewrite=rewrite):
+                self.assertEqual(targets(rewrite), [0x30, 0x31, 0x32])
+
     def test_pic_jump_table_with_prescaled_index(self):
         # HL2 shaderapivk.so 0x25299: `mov ecx, [edi + ebx - D]; add ecx, edi; jmp ecx`,
         # EBX = 4*index computed in another block: entries read while they are code.
