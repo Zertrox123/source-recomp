@@ -697,3 +697,124 @@ RT_CHECK(posix_interleaved_stream_handles_stay_valid) {
     }
     cleanup();
 }
+
+RT_CHECK(tempnam_returns_freeable_unused_names_with_glibc_directory_and_prefix) {
+    strings_top = STR;
+    char directory[] = "/tmp/portal2-tempnam-XXXXXX";
+    assert(mkdtemp(directory));
+    const char *old = getenv("TMPDIR"); char *saved = old ? strdup(old) : NULL;
+    assert(!setenv("TMPDIR", directory, 1));
+    uint32_t prefix = gstr("longprefix"), dir = gstr("/does-not-exist");
+    uint32_t first = call("tempnam", 2, dir, prefix), second = call("tempnam", 2, dir, prefix);
+    assert(first && second && first != second);
+    char expected[PATH_MAX]; snprintf(expected, sizeof(expected), "%s/longp", directory);
+    assert(!strncmp(GPTR(first), expected, strlen(expected)));
+    assert(strlen(GPTR(first)) == strlen(expected) + 6);
+    assert(strcmp(GPTR(first), GPTR(second)));
+    assert(access(GPTR(first), F_OK) == -1 && errno == ENOENT);
+    rt_free(first); rt_free(second);
+    if (saved) { assert(!setenv("TMPDIR", saved, 1)); free(saved); } else assert(!unsetenv("TMPDIR"));
+    assert(!rmdir(directory));
+}
+
+const char *rt_map_tool_program(const char *file);
+RT_CHECK(puzzlemaker_launches_only_recognized_native_tools) {
+    assert(!strcmp(rt_map_tool_program("/game/bin/linux32/vbsp_linux"), "vbsp_linux"));
+    assert(!strcmp(rt_map_tool_program("vvis_linux"), "vvis_dll.so"));
+    assert(!strcmp(rt_map_tool_program("vrad_linux"), "vrad_dll.so"));
+    assert(!rt_map_tool_program("vbsp_linux_other"));
+    assert(!rt_map_tool_program("portal2_linux"));
+}
+
+RT_CHECK(puzzlemaker_child_writes_invalidate_parent_file_cache) {
+    setup();
+    char dir[PATH_MAX]; snprintf(dir, sizeof(dir), "%s/dir", user); assert(!mkdir(dir, 0755));
+    const char *path = game_path("dir/compiler-result.bsp");
+    assert(rt_access_cached(path, F_OK) == -1 && errno == ENOENT);
+    pid_t child = fork(); assert(child >= 0);
+    if (!child) { put(user, "dir/compiler-result.bsp", "compiled BSP"); _exit(0); }
+    assert(call("waitpid", 3, (uint32_t)child, 0u, 0u) == (uint32_t)child);
+    assert(rt_access_cached(path, F_OK) == 0);
+    char contents[32]; slurp(rt_read_path(path), contents, sizeof(contents));
+    assert(!strcmp(contents, "compiled BSP"));
+    cleanup();
+}
+
+static pid_t signal_child;
+static int signal_deliveries;
+static int child_probe(CPU *c, const char *name) {
+    if (strcmp(name, "__sigchld_probe")) return 0;
+    assert(R32(c->esp + 4) == 17);
+    assert(rt_signal_blocked_mask() & (UINT64_C(1) << 16));
+    int status;
+    assert(waitpid(signal_child, &status, WNOHANG) == signal_child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 23);
+    ++signal_deliveries; c->eax = 999; c->ebx = 888;
+    return 1;
+}
+RT_SHIM_PROVIDER(child_probe)
+RT_CHECK(puzzlemaker_sigchld_delivers_exit_status_and_preserves_cpu) {
+    strings_top = STR;
+    uint32_t action = 0x2001f000;
+    memset(GPTR(action), 0, 140);
+    W32(action, rt_dynamic_import("__sigchld_probe"));
+    assert(call("sigaction", 3, 17u, action, 0u) == 0);
+    uint32_t getpid_import = rt_dynamic_import("getpid");
+    CPU c;
+    rt_cpu_reset(&c); c.esp = 0x2001e000;
+    rt_call(&c, getpid_import, RT_RETURN_SENTINEL);  // prime the import cache
+    uint32_t guest_pid = c.eax;
+    gfn direct = rt_lookup(0x6000);
+    assert(direct);  // fixture that returns 99
+    rt_guest_enter();
+    for (int registration = 0; registration < 2; ++registration) {
+        if (registration) assert(call("signal", 2, 17u, R32(action)) == 0);
+        signal_deliveries = 0;
+        signal_child = fork(); assert(signal_child >= 0);
+        if (!signal_child) _exit(23);
+        for (int i = 0; i < 1000 && !atomic_load(&rt_sigchld_pending); ++i) usleep(1000);
+        assert(atomic_load(&rt_sigchld_pending));
+        rt_cpu_reset(&c); c.esp = 0x2001e000; c.eax = 123; c.ebx = 456;
+        CPU before = c;
+        rt_signal_set_blocked_mask(UINT64_C(1) << 16);
+        rt_poll(&c);
+        assert(signal_deliveries == 0 && atomic_load(&rt_sigchld_pending));
+        assert(!memcmp(&c, &before, sizeof(c)));
+        rt_signal_set_blocked_mask(UINT64_C(1) << 9);
+        if (registration) {
+            rt_call_import(&c, getpid_import, RT_RETURN_SENTINEL);
+            before.eax = guest_pid;
+        } else {
+            rt_call_fn(&c, direct, 0x6000, RT_RETURN_SENTINEL);
+            before.eax = 99;
+        }
+        before.eip = RT_RETURN_SENTINEL;
+        assert(rt_signal_blocked_mask() == (UINT64_C(1) << 9));
+        rt_signal_set_blocked_mask(0);
+        assert(signal_deliveries == 1 && !memcmp(&c, &before, sizeof(c)));
+        uint32_t handler = R32(action);
+        W32(action, 0); assert(call("sigaction", 3, 17u, action, 0u) == 0);
+        W32(action, handler);
+    }
+    rt_guest_leave();
+}
+
+static int signal_mask_probe(CPU *c, const char *name) {
+    if (strcmp(name, "__signal_mask_probe")) return 0;
+    c->eax = (uint32_t)rt_signal_blocked_mask();
+    return 1;
+}
+RT_SHIM_PROVIDER(signal_mask_probe)
+RT_CHECK(pthread_inherits_creator_signal_mask) {
+    uint32_t data = 0x2001f000;
+    uint64_t previous = rt_signal_blocked_mask();
+    uint32_t inherited = (1u << 9) | (1u << 16);
+    rt_guest_enter();
+    rt_signal_set_blocked_mask(inherited);
+    assert(!call("pthread_create", 4, data, 0u, rt_dynamic_import("__signal_mask_probe"), 0u));
+    rt_signal_set_blocked_mask(previous);
+    assert(!call("pthread_join", 2, R32(data), data + 4));
+    assert(R32(data + 4) == inherited);
+    assert(rt_signal_blocked_mask() == previous);
+    rt_guest_leave();
+}

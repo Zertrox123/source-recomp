@@ -157,8 +157,9 @@ def main():
     # celle de client.so (sinon : « File already exists in database »).
     scopes = lookup_scopes(mods, a.program)
 
-    def definition_for(module, name):
+    def definition_for(module, name, skip=None):
         for candidate in scopes[module.name]:
+            if candidate is skip: continue
             symbol = candidate.exports().get(name)
             if symbol is None:
                 continue
@@ -177,8 +178,8 @@ def main():
             order.append(name)
         return imports[name]
 
-    def lookup(module, name, weak, kind=0, size=0):
-        definition = definition_for(module, name)
+    def lookup(module, name, weak, kind=0, size=0, skip=None):
+        definition = definition_for(module, name, skip)
         if definition:
             module, symbol = definition
             value = symbol['value'] if symbol['shndx'] == 0xfff1 else module.base + symbol['value']
@@ -195,7 +196,7 @@ def main():
             return 0, None
         return thunk(name), 'libc'
 
-    meta_all = dict(imports=None, modules=[], program=a.program)
+    meta_all = dict(imports=None, modules=[], program=a.program, copy_relocations=[])
     for m in mods:
         tls_sym_off = {}
         n_by_type = {}
@@ -205,8 +206,12 @@ def main():
             if typ == R_386_NONE:
                 continue
             P = m.base + off
-            A = m.u32(off)
             sym = m.dynsyms[si] if si else None
+            if typ == 5:  # R_386_COPY: executable owns storage, initial bytes come from its DSO.
+                source, _ = lookup(m, sym['name'], False, sym['type'], sym['size'], skip=m)
+                meta_all['copy_relocations'].append(dict(address=P, source=source, size=sym['size']))
+                continue
+            A = m.u32(off)
             if typ == R_386_RELATIVE:
                 m.put32(off, m.base + A)
                 continue
@@ -273,6 +278,15 @@ def main():
                 in_text = text['addr'] <= off < text['addr'] + text['size']
                 if tlo <= v < thi and not in_text:
                     ptrs.add(v)
+        # ET_EXEC callback/vtable pointers are already absolute and have no
+        # dynamic relocations. Include allocated non-code tables as roots too.
+        if m.e_type == 2:
+            for section in m.secs.values():
+                if section['type'] != 1 or not section['flags'] & 2 or section['flags'] & 4: continue
+                first = (-section['addr']) & 3
+                for at in range(first, section['size'] - 3, 4):
+                    value = struct.unpack_from('<I', m.data, section['off'] + at)[0]
+                    if tlo <= value < thi: ptrs.add(value)
         exports = {n: m.base + s['value'] for n, s in m.exports().items()}
         md = dict(name=m.name, modid=m.modid, base=m.base, image=img,
                   gotplt=m.base + m.dyn.get(3, 0), entry=m.base + m.e_entry,

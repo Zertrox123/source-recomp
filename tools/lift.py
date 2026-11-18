@@ -283,7 +283,7 @@ def translate(pc, insn, entries=frozenset(), callees=None, cases=None, rebase=Fa
             callees.add(target)
             branch = f'c->flags = f; rt_jump_fn(c, fn_{target:x}, {code_address(target, rebase)}); return;'
             return f'if ({test}) {{ {branch} }} {end}', [nxt]
-        branch = ('rt_poll(); ' if target <= pc else '') + f'goto L{target:x};'
+        branch = ('rt_poll(c); ' if target <= pc else '') + f'goto L{target:x};'
         return f'if ({test}) {{ {branch} }} {end}', [target, nxt]
     if op == 'jmp' or (op.startswith('j') and op[1:] in CC):
         target = Operand(args)
@@ -298,7 +298,7 @@ def translate(pc, insn, entries=frozenset(), callees=None, cases=None, rebase=Fa
                 callees.update(t for t in cases if t in entries)
                 labels = ' '.join(f'case {t:#x}u: goto L{t:x};' for t in local)
                 selector = f'(uint32_t)(a - {CODE_RELOCATED})' if rebase else 'a'
-                return (f'a = {target.read()}; rt_poll(); switch ({selector}) {{ {labels} '
+                return (f'a = {target.read()}; rt_poll(c); switch ({selector}) {{ {labels} '
                         'default: c->flags = f; rt_jump_any(c, a); return; }'), local
             return f'a = {target.read()}; c->flags = f; rt_jump_any(c, a); return;', []
         if target.imm in entries:
@@ -306,7 +306,7 @@ def translate(pc, insn, entries=frozenset(), callees=None, cases=None, rebase=Fa
             branch = f'c->flags = f; rt_jump_fn(c, fn_{target.imm:x}, {code_address(target.imm, rebase)}); return;'
             successors = []
         else:
-            branch = ('rt_poll(); ' if target.imm <= pc else '') + f'goto L{target.imm:x};'
+            branch = ('rt_poll(c); ' if target.imm <= pc else '') + f'goto L{target.imm:x};'
             successors = [target.imm]
         if op == 'jmp':
             return branch, successors
@@ -375,7 +375,7 @@ def translate(pc, insn, entries=frozenset(), callees=None, cases=None, rebase=Fa
     elif op == 'stmxcsr' and len(operands) == 1:
         code = operands[0].write('c->mxcsr')
     elif op == 'pause' and not operands:
-        code = 'rt_poll(); __atomic_signal_fence(__ATOMIC_SEQ_CST);'
+        code = 'rt_poll(c); __atomic_signal_fence(__ATOMIC_SEQ_CST);'
     elif op in ('cld', 'std') and not operands:
         code = f'c->df = {int(op == "std")}u;'
     elif op == 'leave' and not operands:
@@ -1427,6 +1427,8 @@ def runtime_tables(layout, selected, imports):
                         f'{tls["off"]}u, {tls["filesz"]}u, {tls["memsz"]}u, {tls["align"]}u)) return -1;')
     for item in layout.get('data_imports', []):
         code.append(f'if (rt_init_import_data({json.dumps(item["name"])}, {item["addr"]:#x}u, {item["size"]}u)) return -1;')
+    for item in layout.get("copy_relocations", []):
+        code.append(f'memcpy(GPTR({item["address"]:#x}u), GPTR({item["source"]:#x}u), {item["size"]}u);')
     code.extend(['return 0; }', ''])
     code.append(registry.generate(layout))
     return code
@@ -1534,6 +1536,7 @@ NATIVE_OVERRIDES = {
     # ~20 % du thread principal en partie. Inutile ici : APFS est insensible à
     # la casse sur Mac, et paths.c/case_path.c résolvent déjà la casse sur iOS.
     ('filesystem_stdio.so', 0x2df40): ('rt_native_pathmatch', 'PATHMATCH', '5557565383ec0c8b6c24288b5c242c0fb605'),
+    ('filesystem_stdio.so', 0x352d0): ('rt_native_open_for_write', 'WRITEPATH', '57565381ec100200008d84240c010000'),
     # CVEngineServer::GetChangeAccessor (engine.so, entrée 0x180 de sa table) :
     # &sv.edictchangeinfo[NUM_FOR_EDICT(edict)]. Quand on quitte en pleine
     # partie, sv.edicts est déjà à zéro alors que des entités appellent encore

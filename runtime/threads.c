@@ -19,6 +19,7 @@ typedef struct ThreadAttr {
 } ThreadAttr;
 typedef struct Thread {
     CPU cpu;
+    uint64_t signal_mask;
     pthread_t native;
     uint32_t handle,entry,argument,stack,length,result;
     int finished,joining,joined,detached,foreign;
@@ -45,6 +46,7 @@ static void finish(Thread *t){
 }
 static void *thread_entry(void *opaque) {
     Thread *t=opaque;current=t;
+    rt_signal_set_blocked_mask(t->signal_mask);
     rt_guest_enter();
     t->result=rt_invoke(&t->cpu,t->entry,&t->argument,1);
     rt_thread_destructors(&t->cpu);
@@ -111,6 +113,7 @@ int rt_thread_shim(CPU *c,const char *name) {
         Thread *t=calloc(1,sizeof(*t));if(!t){c->eax=ENOMEM;return 1;}
         rt_cpu_reset(&t->cpu);t->cpu.tid=next_tid++;
         t->cpu.fcw=c->fcw;t->cpu.mxcsr=c->mxcsr;
+        t->signal_mask=rt_signal_blocked_mask();
         if(map_stack(c,t,attr?attr->size:8*1024*1024)){free(t);c->eax=RT_EAGAIN;return 1;}
         t->handle=rt_thread_pointer(&t->cpu);
         t->entry=rt_arg32(c,2);t->argument=rt_arg32(c,3);

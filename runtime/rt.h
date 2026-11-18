@@ -61,7 +61,11 @@ uint64_t rt_rdtsc(void);
 // Adresses des imports statiques (0xf0000000+) et dynamiques (0xf8000000+) :
 // jamais du code traduit.
 #define RT_IMPORT_BASE 0xf0000000u
-#define RT_VM_BEGIN 0x21000000u  // au-dessus des modules (< 0x19000000) et de la zone de test 0x20000000
+#ifdef RT_MAP_COMPILER
+#define RT_VM_BEGIN 0x30000000u  // above the compiler's large ELF segments
+#else
+#define RT_VM_BEGIN 0x21000000u  // above game ELF segments and test memory
+#endif
 #define RT_VM_END 0x70000000u
 extern uint8_t rt_vm_permissions[(RT_VM_END - RT_VM_BEGIN) / 4096];
 __attribute__((noreturn)) void rt_memory_trap(uint32_t address, uint64_t length, int mode);
@@ -330,8 +334,11 @@ void rt_guest_poll(void);
 // Threads bloqués sur le verrou invité (scheduler.c). Le code généré ne cède
 // que s'il y en a : test en ligne, sans appel ni accès _Thread_local.
 extern _Atomic unsigned rt_guest_waiting;
-RT_ALWAYS_INLINE void rt_poll(void) {
+extern _Atomic unsigned rt_sigchld_pending;
+void rt_signal_poll(RT_NOESCAPE CPU *c);
+RT_ALWAYS_INLINE void rt_poll(CPU *c) {
     if (__builtin_expect(atomic_load_explicit(&rt_guest_waiting, memory_order_relaxed) != 0, 0)) rt_guest_poll();
+    if (__builtin_expect(atomic_load_explicit(&rt_sigchld_pending, memory_order_relaxed) != 0, 0)) rt_signal_poll(c);
 }
 // Appel et saut directs du code généré vers une fonction traduite connue
 // (tools/lift.py, link_direct). Hors RT_TRACED_CALLS, ni verrou invité (le
@@ -349,7 +356,7 @@ RT_ALWAYS_INLINE void rt_call_fn_mem(uint8_t *mem, CPU *c, gfn fn, uint32_t targ
 #ifdef RT_TRACED_CALLS
     (void)mem; (void)fn; rt_call(c, target, expected_return);
 #else
-    rt_poll(); c->esp -= 4; rt_w32(mem, c->esp, expected_return); c->eip = target; fn(c);
+    rt_poll(c); c->esp -= 4; rt_w32(mem, c->esp, expected_return); c->eip = target; fn(c);
 #endif
 }
 #define rt_call_fn(c, fn, target, expected_return) rt_call_fn_mem(RT_MEM, (c), (fn), (target), (expected_return))
@@ -369,7 +376,7 @@ RT_ALWAYS_INLINE gfn rt_site_lookup(RtSiteCache *site, uint32_t target) {
 static inline void rt_call_any_site(uint8_t *mem, CPU *c, uint32_t target, uint32_t expected_return, RtSiteCache *site) {
 #ifndef RT_TRACED_CALLS
     gfn fn = rt_site_lookup(site, target);
-    if (fn) { rt_poll(); c->esp -= 4; rt_w32(mem, c->esp, expected_return); c->eip = target; fn(c); return; }
+    if (fn) { rt_poll(c); c->esp -= 4; rt_w32(mem, c->esp, expected_return); c->eip = target; fn(c); return; }
 #else
     (void)mem; (void)site;
 #endif
@@ -378,7 +385,7 @@ static inline void rt_call_any_site(uint8_t *mem, CPU *c, uint32_t target, uint3
 static inline void rt_jump_any_site(CPU *c, uint32_t target, RtSiteCache *site) {
 #ifndef RT_TRACED_CALLS
     gfn fn = rt_site_lookup(site, target);
-    if (fn) { rt_poll(); c->eip = target; fn(c); return; }
+    if (fn) { rt_poll(c); c->eip = target; fn(c); return; }
 #else
     (void)site;
 #endif
@@ -395,7 +402,7 @@ RT_ALWAYS_INLINE void rt_jump_fn(CPU *c, gfn fn, uint32_t target) {
 #ifdef RT_TRACED_CALLS
     (void)fn; rt_dispatch(c, target);
 #else
-    rt_poll(); c->eip = target; fn(c);
+    rt_poll(c); c->eip = target; fn(c);
 #endif
 }
 const char *rt_import_name(uint32_t target);

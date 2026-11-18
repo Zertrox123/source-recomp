@@ -32,6 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import games  # noqa: E402
 import localconfig  # noqa: E402
+from puzzlemaker import prepare_puzzlemaker  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 # Données propres à l'app, hors du dépôt : ./uninstall.sh supprime ce dossier.
@@ -53,8 +54,13 @@ GAME_DIR={game_dir}   # quoted by shlex: never re-parsed by the shell
 if [ ! -x "$HERE/{executable}" ]; then alert "Exécutable introuvable dans l'app. Relancer tools/make_app.py."; exit 1; fi
 if [ ! -d "$GAME_DIR" ]; then alert "Données du jeu introuvables (disque externe débranché ?) : $GAME_DIR"; exit 1; fi
 mkdir -p "$(dirname "$LOG")" {user_dir}
+: >"$LOG"
+PUZZLEMAKER="$HERE/../Resources/puzzlemaker.py"
+if [ -f "$PUZZLEMAKER" ]; then
+    /usr/bin/python3 "$PUZZLEMAKER" "$GAME_DIR" {user_dir} >>"$LOG" 2>&1
+fi
 # Check the effective game data (including user overrides) before starting Steam.
-if ! "$HERE/{executable}" --check-game-data --game-dir {game_dir} --linux-root {linux_root} --user-dir {user_dir} >"$LOG" 2>&1; then
+if ! "$HERE/{executable}" --check-game-data --game-dir {game_dir} --linux-root {linux_root} --user-dir {user_dir} >>"$LOG" 2>&1; then
     alert "$(cat "$LOG")"
     exit 1
 fi
@@ -74,7 +80,7 @@ export P2_STEAM_API_DYLIB="$HERE/../Frameworks/libsteam_api.dylib"
 # Un -language passé au lanceur l'emporte ; en cas d'échec, le jeu reste en anglais.
 LANGUAGE_ARGS=$(/usr/bin/python3 "$HERE/../Resources/language.py" --config "$HERE/../Resources/local.json" -- {game_args} "$@" 2>/dev/null)
 exec "$HERE/{executable}" --images "$(dirname "$HERE")/Resources/prep" --game-dir {game_dir} --linux-root {linux_root} \\
-    --user-dir {user_dir} -- {game_args} $LANGUAGE_ARGS "$@" >"$LOG" 2>&1
+    --user-dir {user_dir} -- {game_args} $LANGUAGE_ARGS "$@" >>"$LOG" 2>&1
 '''
 
 
@@ -256,7 +262,7 @@ def default_args(game):
     return ['-game', game['mod'], '-novid', '+m_rawinput', '1']
 
 
-def build_app(app, binary, prep, config, paths, game_args):
+def build_app(app, binary, prep, config, paths, game_args, *, map_compiler=True):
     macos = app / 'Contents/MacOS'
     resources = app / 'Contents/Resources'
     macos.mkdir(parents=True)
@@ -272,6 +278,8 @@ def build_app(app, binary, prep, config, paths, game_args):
     (resources / 'local.json').write_text(json.dumps(config, indent=2) + '\n')
 
     game = games.profile(config)
+    if game['name'] == 'portal2':
+        shutil.copy(ROOT / 'tools/puzzlemaker.py', resources / 'puzzlemaker.py')
     launcher = macos / 'launcher'
     launcher.write_text(LAUNCHER.format(
         name=game['app_name'], log_name=game['log_name'], appid=int(game['steam_appid']), executable=game['executable'],
@@ -279,6 +287,11 @@ def build_app(app, binary, prep, config, paths, game_args):
         **{key: shlex.quote(str(value)) for key, value in paths.items()}))
     launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     bundle_libraries(app, binary, localconfig.host_prefix(config), executable=game['executable'])
+    compiler = ROOT / 'build/portal2-map-compiler'
+    compiler_prep = ROOT / 'build/tools/vbsp/prep'
+    if map_compiler and game['name'] == 'portal2' and compiler.exists() and (compiler_prep / 'layout.json').exists():
+        bundle_libraries(app, compiler, localconfig.host_prefix(config), executable='portal2-map-compiler')
+        copy_tree(compiler_prep, resources / 'map-compiler/prep')
     bundle_steam_api(app, config)
     bundle_d3d9metal(app, config)
 
@@ -299,6 +312,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     games.add_argument(parser)
     parser.add_argument('--dest', type=Path, default=Path.home() / 'Applications')
+    parser.add_argument('--no-map-compiler', action='store_true', help='omit the optional Puzzle Maker compiler')
     parser.add_argument('game_args', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     game_args = args.game_args[1:] if args.game_args[:1] == ['--'] else args.game_args
@@ -317,6 +331,9 @@ def main():
         'linux_root': Path(config['linux_root']), 'user_dir': user_dir(config),
     }
 
+    if game['name'] == 'portal2':
+        prepare_puzzlemaker(paths['game_dir'], paths['user_dir'])
+
     # Construite à côté puis échangée : un échec en cours de route laisse
     # l'app existante intacte.
     name = game['app_name']
@@ -324,7 +341,7 @@ def main():
     app = args.dest / f'.{name}.app.partial'
     if app.exists(): shutil.rmtree(app)
     try:
-        build_app(app, binary, prep, config, paths, game_args)
+        build_app(app, binary, prep, config, paths, game_args, map_compiler=not args.no_map_compiler)
     except BaseException:
         shutil.rmtree(app, ignore_errors=True)
         raise

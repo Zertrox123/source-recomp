@@ -225,7 +225,7 @@ static int run_shim(CPU *c, const char *name, const RtShimRoute *route, RtShimRo
 }
 
 void rt_dispatch(CPU *c, uint32_t target) {
-    rt_guest_poll();
+    rt_poll(c);
     c->eip = target;
     gfn fn = target < RT_IMPORT_BASE ? rt_lookup(target) : NULL;
     // Pas une fonction des modules préparés : peut-être un greffon PE traduit
@@ -265,6 +265,7 @@ void rt_call_import(CPU *c, uint32_t target, uint32_t expected_return) {
     RouteSlot *slot = route_slot(target, 0);
     ImportRoute *cached = slot ? atomic_load_explicit(slot, memory_order_acquire) : NULL;
     if (cached) {
+        rt_poll(c);
         if (__builtin_expect(atomic_load_explicit(&import_counts, memory_order_relaxed) > 0, 0)) atomic_fetch_add_explicit(&cached->calls, 1, memory_order_relaxed);
         PUSH(c, expected_return);
         c->eip = target;
