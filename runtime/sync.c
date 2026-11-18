@@ -172,10 +172,25 @@ void rt_signal_poll(CPU *c) {
     uint64_t saved_mask = blocked;
     // Linux blocks the delivered signal and sa_mask until the handler returns.
     rt_signal_set_blocked_mask(blocked | kernel_set(action.mask) | (UINT64_C(1) << 16));
+    c->df = 0;  // Linux clears DF on signal delivery; `saved` restores it
     uint32_t args[] = {17};
     rt_invoke(c, handler, args, 1);
     blocked = saved_mask;
     *c = saved;
+}
+
+// Applies a guest disposition to the host signal; called with signal_lock held.
+// A real guest handler is only installed for SIGCHLD (deferred to rt_signal_poll);
+// SIG_DFL and SIG_IGN are applied to every host-mapped signal. Returns sigaction's result.
+static int install_host_disposition(uint32_t signal, uint32_t handler) {
+    int host = host_signal(signal);
+    if (!host || (handler > 1 && signal != 17)) return 0;
+    struct sigaction native; memset(&native, 0, sizeof(native));
+    if (handler > 1) {
+        native.sa_handler = child_signal;
+        native.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    } else native.sa_handler = handler ? SIG_IGN : SIG_DFL;
+    return sigaction(host, &native, NULL);
 }
 
 static int signal_shim(CPU *c, const char *name) {
@@ -218,13 +233,7 @@ static int signal_shim(CPU *c, const char *name) {
         if (handler > 1 && signal != 17 && signal != 4 && signal != 11)
             { char m[96]; snprintf(m, sizeof(m), "guest handler for signal %u cannot be delivered by this runtime", signal); rt_trap(c, c->eip, m); }
         pthread_mutex_lock(&signal_lock);
-        int host = host_signal(signal);
-        if (host && (handler <= 1 || signal == 17)) {
-            struct sigaction native; memset(&native, 0, sizeof(native));
-            native.sa_handler = handler > 1 ? child_signal : handler ? SIG_IGN : SIG_DFL;
-            if (handler > 1) native.sa_flags = SA_RESTART | SA_NOCLDSTOP;
-            if (sigaction(host, &native, NULL)) { pthread_mutex_unlock(&signal_lock); rt_save_errno(c); c->eax = UINT32_MAX; return 1; }
-        }
+        if (install_host_disposition(signal, handler)) { pthread_mutex_unlock(&signal_lock); rt_save_errno(c); c->eax = UINT32_MAX; return 1; }
         uint32_t previous = dispositions[signal].handler;
         dispositions[signal] = (Disposition){0};
         dispositions[signal].handler = handler;
@@ -241,19 +250,14 @@ static int signal_shim(CPU *c, const char *name) {
             memcpy(&next.flags, raw + 132, 4); memcpy(&next.restorer, raw + 136, 4);
             if (next.handler > 1 && signal != 17 && signal != 4 && signal != 11)
                 { char m[96]; snprintf(m, sizeof(m), "guest handler for signal %u cannot be delivered by this runtime", signal); rt_trap(c, c->eip, m); }
+            // rt_signal_poll passes only the signal number, not siginfo_t and ucontext_t.
+            if (next.handler > 1 && signal == 17 && (next.flags & 0x4u))   // SA_SIGINFO (Linux)
+                rt_trap(c, c->eip, "guest SA_SIGINFO handler for signal 17 cannot be delivered by this runtime");
         }
         pthread_mutex_lock(&signal_lock);
         Disposition previous = dispositions[signal];
         if (act) {
-            int host = host_signal(signal);
-            if (host) {
-                struct sigaction native; memset(&native, 0, sizeof(native));
-                if (next.handler > 1) {
-                    native.sa_handler = child_signal;
-                    native.sa_flags = SA_RESTART | SA_NOCLDSTOP;
-                } else native.sa_handler = next.handler ? SIG_IGN : SIG_DFL;
-                if (sigaction(host, &native, NULL)) { pthread_mutex_unlock(&signal_lock); rt_save_errno(c); c->eax = UINT32_MAX; return 1; }
-            }
+            if (install_host_disposition(signal, next.handler)) { pthread_mutex_unlock(&signal_lock); rt_save_errno(c); c->eax = UINT32_MAX; return 1; }
             dispositions[signal] = next;
         }
         pthread_mutex_unlock(&signal_lock);
