@@ -1,6 +1,6 @@
 # Development log
 
-## Current state (8 November 2026, v0.3.0)
+## Current state (18 November 2026, v0.4.0)
 
 - **Mac**: playable from `~/Applications/Portal 2 Natif.app`. Metal
   (Direct3D 9 bridge to mtld3d) is the default renderer when `libd3d9metal` is
@@ -13,8 +13,23 @@
 - **Half-Life 2** (experimental): built from the same checkout into
   `build/hl2`, Metal by default, 120 fps on Mac, 60 fps on an iPhone 15 Pro Max
   in a short test ([docs/hl2.md](docs/hl2.md)).
+- **Portal** (experimental, contributed in #31): built into `build/portal1`
+  from the current Linux binaries (depot 404); the first chambers have been
+  played on a Mac ([docs/portal1.md](docs/portal1.md)). The `save` crash of
+  #44 is fixed in the lifter and checked in Half-Life 2, which shares that
+  code; not confirmed in Portal yet.
+- **Portal 2 Puzzle Maker** (#42): Build and Play works on Mac. VBSP, VVIS
+  and VRAD are recompiled too and run natively; they are opt-in
+  (`./setup.sh --puzzle-maker` or the installer's box,
+  [docs/puzzlemaker.md](docs/puzzlemaker.md)).
+- **Generated code**: the lifter proves that Portal 2 never reads x86 flags
+  across calls and stops saving them around every call (binary 17 % smaller);
+  Half-Life 2 does not pass the proof and keeps the previous mode.
+- **Native plugins**: a server plugin built as a macOS arm64 dylib loads
+  where the game expects a Linux `.so`
+  ([docs/native-plugins.md](docs/native-plugins.md)).
 - **Install**: the Natif Installer app or `./setup.sh` (and `--ios`), for
-  one game or both ([README](README.md#install-on-mac)).
+  one game or all ([README](README.md#install-on-mac)).
 
 The rest of this file is the measurements, the performance analysis and a
 dated history, newest first. Run and diagnostics instructions are in
@@ -229,6 +244,14 @@ forcing buffer usage, `gl_bufmode`, an order file of hot functions
 
 ## History
 
+- **18 Nov. 2026** (v0.4.0): Puzzle Maker export and native map compilers
+  (#42, opt-in since #48), SIGCHLD delivery hardened (#47), PIC switches
+  that jump through a copy of the GOT register recognised by the lifter
+  (#45, fixes #44).
+- **9–17 Nov.**: Portal added (#31); ABI flags mode of the lifter (#33);
+  native plugins (#32); a message instead of a crash without Steam (#39);
+  Mac key repeat and raw mouse input (#40); Workshop crash in Half-Life 2
+  (#37); linker paths with spaces (#43).
 - **8 Nov. 2026**: audit and cleanup: merged worktrees removed, `runtime/`,
   `tests/` and `tools/` factored, documentation pruned; HL2 iPhone first run.
 - **7–8 Nov.**: HL2 performance work above (event queries reached at Present,
