@@ -376,6 +376,55 @@ static int virtual_bridge(CPU *c, const char *name, uint32_t table, long iface) 
         c->eax = ((Get)(*(void ***)host)[7])(host, steam_out(c, R32(args), 4), steam_out(c, R32(args + 4), 2)) ? 1u : 0u;
         return 1;
     }
+    if (!strncmp(name, "STEAMREMOTESTORAGE_INTERFACE_VERSION016::", 41)) {
+        // Publication Workshop du Puzzle Maker : PublishWorkshopFile (slot 30) n'a
+        // pas de fonction flat ; UpdatePublishedFileTags (37),
+        // EnumerateUserSharedWorkshopFiles (49) et EnumeratePublishedWorkshopFiles
+        // (53) prennent des SteamParamStringArray_t que le générateur ne traduit
+        // pas. Ordre des slots : isteamremotestorage.h (SDK 1.53a), recoupé avec
+        // les slots des fonctions flat voisines (29, 31, 38, 52, 54).
+        const char *method = name + 41;
+        unsigned which = !strcmp(method, "slot30") ? 30 : !strcmp(method, "UpdatePublishedFileTags") ? 37 :
+                         !strcmp(method, "EnumerateUserSharedWorkshopFiles") ? 49 :
+                         !strcmp(method, "EnumeratePublishedWorkshopFiles") ? 53 : 0;
+        if (!which) return 0;
+        uint32_t object = R32(c->esp + 4), a = c->esp + 8;
+        void *host = object && R32(object) == table ? steam_proxy_host(object) : NULL;
+        if (!host) fail(c, "Steam: %s called on an object that is not a %s proxy", name, interface_version((size_t)iface));
+        void *fn = (*(void ***)host)[which];
+        // SteamParamStringArray_t i386 { const char **m_ppStrings; int32 m_nNumStrings; }
+        typedef struct { const char **strings; int32_t count; } Strings;
+        Strings arrays[2]; const char *items[2][64];
+        #define Q(o) ((uint64_t)R32(a + (o)) | (uint64_t)R32(a + (o) + 4) << 32)
+        #define S(o) steam_in_string(c, R32(a + (o)))
+        #define TAGS(o, k) ({ uint32_t p_ = R32(a + (o)); Strings *r_ = NULL; \
+            if (p_) { uint32_t list_ = R32(p_); int32_t n_ = (int32_t)R32(p_ + 4); \
+                if (n_ < 0 || n_ > 64) fail(c, "Steam: %s: invalid tag count%s", name, ""); \
+                for (int32_t i_ = 0; i_ < n_; ++i_) items[k][i_] = steam_in_string(c, R32(list_ + 4 * (uint32_t)i_)); \
+                arrays[k] = (Strings){n_ ? items[k] : NULL, n_}; r_ = &arrays[k]; } r_; })
+        switch (which) {
+        case 30: { // PublishWorkshopFile(file, preview, consumerApp, title, description, visibility, tags, type)
+            typedef uint64_t (*T)(void *, const char *, const char *, uint32_t, const char *, const char *, int32_t, Strings *, int32_t);
+            steam_ret64(c, ((T)fn)(host, S(0), S(4), R32(a + 8), S(12), S(16), (int32_t)R32(a + 20), TAGS(24, 0), (int32_t)R32(a + 28)));
+            break; }
+        case 37: { // UpdatePublishedFileTags(updateHandle, tags) -> bool
+            typedef bool (*T)(void *, uint64_t, Strings *);
+            c->eax = ((T)fn)(host, Q(0), TAGS(8, 0)) ? 1u : 0u;
+            break; }
+        case 49: { // EnumerateUserSharedWorkshopFiles(CSteamID, start, requiredTags, excludedTags)
+            typedef uint64_t (*T)(void *, uint64_t, uint32_t, Strings *, Strings *);
+            steam_ret64(c, ((T)fn)(host, Q(0), R32(a + 8), TAGS(12, 0), TAGS(16, 1)));
+            break; }
+        default: { // EnumeratePublishedWorkshopFiles(type, start, count, days, tags, userTags)
+            typedef uint64_t (*T)(void *, int32_t, uint32_t, uint32_t, uint32_t, Strings *, Strings *);
+            steam_ret64(c, ((T)fn)(host, (int32_t)R32(a), R32(a + 4), R32(a + 8), R32(a + 12), TAGS(16, 0), TAGS(20, 1)));
+            break; }
+        }
+        #undef Q
+        #undef S
+        #undef TAGS
+        return 1;
+    }
     if (sscanf(name, "SteamGameStats001::slot%u", &slot) == 1 && slot <= 12) {
         // ISteamGameStats001 (isteamgamestats.h, SDK historique ; ordre vérifié
         // pour GetNewSession au site d'appel de client.so). uint64 invités = 2 mots.
@@ -444,7 +493,7 @@ static int method_shim(CPU *c, const char *name) {
     pthread_mutex_unlock(&lock);
     if (iface < 0) return 0;
     const SteamMethodInfo *m = find_method(name);
-    if (!m && virtual_bridge(c, name, table, iface)) return 1;
+    if ((!m || !m->fn) && virtual_bridge(c, name, table, iface)) return 1;
     if (!m) fail(c, "Steam: %s has no flat function in SDK 1.53a%s", name, "");
     if (!m->fn) {
         snprintf(message, sizeof(message), "Steam: %s (vtable slot %u) is not bridged: %s", name, m->slot, m->why);
