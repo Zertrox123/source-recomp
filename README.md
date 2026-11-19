@@ -367,7 +367,8 @@ profiles.
 | Controllers | A full playthrough with a controller, and other controllers (Xbox, DualSense) | 📅 |
 | Controllers | Button prompts and default bindings that match the controller | 💡 |
 | Community | Community maps copied by hand, loaded with `+map` | 📅 |
-| Community | Steam Workshop on Mac (needs the UGC part of the Steam bridge) | 💡 |
+| Community | Publish Puzzle Maker chambers to the Steam Workshop on Mac ([details](docs/steam.md)) | ✅ |
+| Community | Browse and subscribe to Workshop chambers on Mac (enumeration methods bridged, not tested) | 🚧 |
 | Half-Life 2 | Mac app from the same recompiler, installer and checkout as Portal 2, main game played for a few hours | 🚧 |
 | Half-Life 2 | iPhone app: 60 fps on an iPhone 15 Pro Max in a first short test (`./setup.sh --game hl2 --ios`, [details](docs/hl2.md#iphone)) | 🚧 |
 | Half-Life 2 | The episodes and Lost Coast: first maps load and render, not played through | 🚧 |

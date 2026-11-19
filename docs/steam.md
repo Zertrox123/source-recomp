@@ -79,6 +79,16 @@ and 29: digital and analog action data, motion data), where i386 passes a hidden
 and ARM64 uses its own structure-return ABI. `SetWarningMessageHook` (`ISteamClient`, `ISteamUtils`) is bridged: the host hook
 copies the message into guest memory, masks SteamIDs and calls the guest function.
 
+Puzzle Maker publishing goes through `STEAMREMOTESTORAGE_INTERFACE_VERSION016`.
+`PublishWorkshopFile` (slot 30) has no flat function, and `UpdatePublishedFileTags`
+(37), `EnumerateUserSharedWorkshopFiles` (49) and `EnumeratePublishedWorkshopFiles`
+(53) take `SteamParamStringArray_t` pointers that the generator leaves untranslated.
+`virtual_bridge` calls these four slots on the host object, copying each guest tag
+array (`{const char **, int32}`, at most 64 strings) into a host one. Slot order
+follows `isteamremotestorage.h` (SDK 1.53a) and matches the flat functions around
+them (29, 31, 38, 52, 54). Publishing a chamber was tested end to end (private
+visibility); the two enumeration methods were not exercised.
+
 Notable trapping methods: `ISteamMatchmakingServers` (16/17, guest C++ response objects —
 server browser), part
 of `ISteamUGC`/`ISteamInventory`/`ISteamHTMLSurface` (string arrays, structures),
