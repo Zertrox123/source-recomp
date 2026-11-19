@@ -467,6 +467,86 @@ RT_CHECK(steam_game_stats_marshals_uint64) {
     assert(c.eax == 1 && R32(0x20011900) == 0x00112233u && R32(0x20011904) == 0xaabbccddu);
 }
 
+// Faux ISteamRemoteStorage016 : publication Workshop du Puzzle Maker. Les
+// SteamParamStringArray_t invités ({char **, int32}, pointeurs 32 bits) doivent
+// arriver en tableaux hôtes ; un pointeur nul reste nul, un tableau vide n'a pas de chaînes.
+typedef struct { const char **strings; int32_t count; } WsTags;
+static unsigned ws_calls;
+static uint64_t ws_publish(void *self, const char *file, const char *preview, uint32_t app, const char *title,
+                           const char *description, int32_t visibility, WsTags *tags, int32_t type) {
+    (void)self; ++ws_calls;
+    assert(!strcmp(file, "puzzle.bsp") && !strcmp(preview, "puzzle.jpg") && app == 620);
+    assert(!strcmp(title, "Room") && !strcmp(description, "A room") && visibility == 2 && type == 0);
+    assert(tags && tags->count == 2 && !strcmp(tags->strings[0], "Singleplayer") && !strcmp(tags->strings[1], "Custom"));
+    return 0x1122334455667788ull;
+}
+static bool ws_update_tags(void *self, uint64_t handle, WsTags *tags) {
+    (void)self; ++ws_calls;
+    assert(handle == 0x0123456789abcdefull && !tags);
+    return true;
+}
+static uint64_t ws_shared(void *self, uint64_t steam_id, uint32_t start, WsTags *required, WsTags *excluded) {
+    (void)self; ++ws_calls;
+    assert(steam_id == 0x0110000100abcdefull && start == 7);
+    assert(required && required->count == 1 && !strcmp(required->strings[0], "Custom"));
+    assert(excluded && excluded->count == 0 && !excluded->strings);
+    return 0xaabbccdd00112233ull;
+}
+static uint64_t ws_enumerate(void *self, int32_t type, uint32_t start, uint32_t count, uint32_t days, WsTags *tags, WsTags *user_tags) {
+    (void)self; ++ws_calls;
+    assert(type == 1 && start == 2 && count == 50 && days == 30 && !user_tags);
+    assert(tags && tags->count == 1 && !strcmp(tags->strings[0], "Singleplayer"));
+    return 0x0102030405060708ull;
+}
+static void *ws_vtable[59];
+static struct { void **vtable; } ws_object = {ws_vtable};
+static CPU ws_call(uint32_t proxy, unsigned slot, unsigned count, const uint32_t *args) {
+    CPU c; rt_cpu_reset(&c); c.esp = 0x20010000;
+    W32(c.esp, proxy);
+    for (unsigned i = 0; i < count; ++i) W32(c.esp + 4 + 4 * i, args[i]);
+    rt_call(&c, R32(R32(proxy) + 4 * slot), RT_RETURN_SENTINEL);
+    assert(c.eip == RT_RETURN_SENTINEL);
+    return c;
+}
+RT_CHECK(steam_workshop_publish_copies_tag_arrays) {
+    #define WS "STEAMREMOTESTORAGE_INTERFACE_VERSION016::"
+    ws_vtable[30] = (void *)ws_publish;   // PublishWorkshopFile : pas de fonction flat, donc absent de la table
+    ws_vtable[method(WS "UpdatePublishedFileTags")->slot] = (void *)ws_update_tags;
+    ws_vtable[method(WS "EnumerateUserSharedWorkshopFiles")->slot] = (void *)ws_shared;
+    ws_vtable[method(WS "EnumeratePublishedWorkshopFiles")->slot] = (void *)ws_enumerate;
+    assert(method(WS "GetCachedUGCHandle")->slot == 29 && method(WS "CreatePublishedFileUpdateRequest")->slot == 31);
+    CPU c; rt_cpu_reset(&c);
+    uint32_t proxy = steam_proxy(&c, &ws_object, "STEAMREMOTESTORAGE_INTERFACE_VERSION016");
+    assert(proxy);
+
+    uint32_t at = 0x20011000;
+    uint32_t single = guest_string(at, "Singleplayer"), custom = guest_string(at + 0x20, "Custom");
+    uint32_t list2 = at + 0x100, list1 = at + 0x110, list_custom = at + 0x120;
+    W32(list2, single); W32(list2 + 4, custom); W32(list1, single); W32(list_custom, custom);
+    uint32_t two = at + 0x200, one = at + 0x210, one_custom = at + 0x220, empty = at + 0x230;
+    W32(two, list2); W32(two + 4, 2); W32(one, list1); W32(one + 4, 1);
+    W32(one_custom, list_custom); W32(one_custom + 4, 1); W32(empty, 0); W32(empty + 4, 0);
+
+    ws_calls = 0;
+    uint32_t publish[] = {guest_string(at + 0x300, "puzzle.bsp"), guest_string(at + 0x320, "puzzle.jpg"), 620,
+                          guest_string(at + 0x340, "Room"), guest_string(at + 0x360, "A room"), 2, two, 0};
+    c = ws_call(proxy, 30, 8, publish);
+    assert(ws_calls == 1 && c.eax == 0x55667788u && c.edx == 0x11223344u);
+
+    uint32_t update[] = {0x89abcdefu, 0x01234567u, 0};
+    c = ws_call(proxy, method(WS "UpdatePublishedFileTags")->slot, 3, update);
+    assert(ws_calls == 2 && c.eax == 1);
+
+    uint32_t shared[] = {0x00abcdefu, 0x01100001u, 7, one_custom, empty};
+    c = ws_call(proxy, method(WS "EnumerateUserSharedWorkshopFiles")->slot, 5, shared);
+    assert(ws_calls == 3 && c.eax == 0x00112233u && c.edx == 0xaabbccddu);
+
+    uint32_t enumerate[] = {1, 2, 50, 30, one, 0};
+    c = ws_call(proxy, method(WS "EnumeratePublishedWorkshopFiles")->slot, 6, enumerate);
+    assert(ws_calls == 4 && c.eax == 0x05060708u && c.edx == 0x01020304u);
+    #undef WS
+}
+
 RT_CHECK(steam_callback_tail_padding_table) {
     assert(steam_callback_guest_size(2002, 16) == 12);   // GameStatsSessionClosed_t
     assert(steam_callback_guest_size(2002, 20) == 20);   // taille inattendue : inchangée (piégera)
