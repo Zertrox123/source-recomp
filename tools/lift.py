@@ -1686,9 +1686,44 @@ class LazyInsns(dict):
             self.modules.pop(name, None)
         self.transient.clear()
 
+    RESYNC_WINDOW = 0x800
+
     def _fault(self, pc):
         module = owner(self.layout, pc)
-        return module is not None and self.load(module, transient=True)
+        if module is None:
+            return False
+        if self.load(module, transient=True):
+            return True
+        return self._resync(module, pc)
+
+    def _resync(self, module, pc):
+        """Decode again from `pc` when the module's linear sweep went out of step
+        before it (bytes the disassembler took for a longer instruction, as in
+        Portal Stories: Mel's valve_avi.so), so that a function entry reached
+        by a call still decodes. Instructions already decoded are kept."""
+        windows = self.__dict__.setdefault('resynced', set())
+        if pc in windows:
+            return False
+        windows.add(pc)
+        # Layout addresses are absolute; objdump windows are image offsets.
+        segment = next((s for s in module['loads'] if s['flags'] & 1
+                        and s['vaddr'] <= pc < s['vaddr'] + s['filesz']), None)
+        if segment is None:
+            return False
+        offset = pc - module['base']
+        stop = min(offset + self.RESYNC_WINDOW, segment['vaddr'] + segment['filesz'] - module['base'])
+        added = False
+        decoded = self.modules.get(module['name'])
+        for start, insn in disassemble(module['image'], module['base'], self.objdump,
+                                       offset, stop).items():
+            if dict.__contains__(self, start):
+                continue
+            dict.__setitem__(self, start, insn)
+            self.previous.setdefault(insn[0], start)
+            if decoded is not None:
+                decoded[start] = insn
+            added = True
+        return added
 
     def __contains__(self, pc):
         return dict.__contains__(self, pc) or (self._fault(pc) and dict.__contains__(self, pc))
