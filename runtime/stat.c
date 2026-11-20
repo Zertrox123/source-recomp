@@ -8,7 +8,11 @@
 #include <unistd.h>
 
 static int write_stat(CPU *c,uint32_t address,const struct stat *value,int wide) {
-    if(!wide && (value->st_size>INT32_MAX || value->st_blocks>INT32_MAX || value->st_ino>UINT32_MAX)){errno=EOVERFLOW;return -1;}
+    // An inode number beyond 32 bits (common on the sealed macOS system volume, e.g.
+    // /System/Library/Fonts) is truncated rather than failing with EOVERFLOW: games
+    // only use it as an identifier, and a failing stat left Portal Stories: Mel's
+    // file size uninitialized when it opened a system font.
+    if(!wide && (value->st_size>INT32_MAX || value->st_blocks>INT32_MAX)){errno=EOVERFLOW;return -1;}
     if(value->st_atimespec.tv_sec>INT32_MAX || value->st_atimespec.tv_sec<INT32_MIN ||
        value->st_mtimespec.tv_sec>INT32_MAX || value->st_mtimespec.tv_sec<INT32_MIN ||
        value->st_ctimespec.tv_sec>INT32_MAX || value->st_ctimespec.tv_sec<INT32_MIN){errno=EOVERFLOW;return -1;}

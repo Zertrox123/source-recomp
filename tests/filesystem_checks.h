@@ -36,6 +36,16 @@ static void check_filesystem(void) {
     assert(R32(0x2000a000+52)>0 && R64(0x2000a000+88)>0);
     W32(c.esp+4,3);assert(rt_stat_shim(&c,"__xstat") && !c.eax);
     assert(R32(0x2000a000+44)==7);
+    // Un inode > 32 bits (volume système scellé macOS) est tronqué au lieu de renvoyer EOVERFLOW.
+    struct stat sys_st;
+    const char *sys_file = "/System/Library/Fonts/Helvetica.ttc";
+    if (!stat(sys_file, &sys_st) && sys_st.st_ino > UINT32_MAX) {
+        strcpy(GPTR(0x20009000), sys_file);
+        W32(c.esp+4, 3); W32(c.esp+8, 0x20009000); W32(c.esp+12, 0x2000a000);
+        assert(rt_stat_shim(&c, "__xstat") && !c.eax);
+        assert(R32(0x2000a000 + 12) == (uint32_t)sys_st.st_ino);
+        strcpy(GPTR(0x20009000), source);
+    }
     strcpy(GPTR(0x20009100),"rb");
     W32(c.esp+4,0x20009000);W32(c.esp+8,0x20009100);
     assert(rt_libc_shim(&c,"fopen") && c.eax);uint32_t stream=c.eax;
