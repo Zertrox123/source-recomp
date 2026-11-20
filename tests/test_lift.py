@@ -397,3 +397,31 @@ class CpuidGatedInstructions(unittest.TestCase):
             self.assertIn('rt_trap(c, 0x1000u', code)
             self.assertIn('not reported by CPUID', code)
             self.assertEqual(successors, [])
+
+
+class LazyInsnsResync(unittest.TestCase):
+    def test_resync_decodes_missed_entry_and_keeps_existing_insns(self):
+        from unittest.mock import patch
+        layout = {'modules': [{
+            'name': 'valve_avi.so', 'base': 0x14a00000, 'image': 'fake.so',
+            'loads': [{'vaddr': 0x14a00000, 'filesz': 0x50000, 'flags': 5}],
+        }]}
+        linear = {0x14a3301d: (0x14a33022, 'add', 'eax, 0x55')}  # out-of-step linear sweep crossing 0x14a33020
+        resynced = {0x14a33020: (0x14a33021, 'push', 'ebp'), 0x14a33021: (0x14a33023, 'mov', 'ebp, esp')}
+        calls = []
+        def fake_disassemble(image, base, objdump, start=None, stop=None):
+            calls.append((start, stop))
+            return linear if start is None else resynced
+        with patch.object(lift, 'disassemble', side_effect=fake_disassemble):
+            insns = lift.LazyInsns(layout, 'objdump', None)
+            self.assertIn(0x14a3301d, insns)
+            self.assertIn(0x14a33020, insns)
+            self.assertEqual(insns[0x14a33020], (0x14a33021, 'push', 'ebp'))
+            self.assertEqual(insns[0x14a3301d], (0x14a33022, 'add', 'eax, 0x55'))
+            # Layout addresses are absolute; the resync window passed to objdump is image-relative.
+            self.assertEqual(calls, [(None, None), (0x33020, 0x33020 + lift.LazyInsns.RESYNC_WINDOW)])
+            # Repeated lookup of an unmapped entry does not re-invoke objdump.
+            self.assertNotIn(0x14a33099, insns)
+            count = len(calls)
+            self.assertNotIn(0x14a33099, insns)
+            self.assertEqual(len(calls), count)
