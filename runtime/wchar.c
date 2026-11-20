@@ -257,7 +257,12 @@ static int wchar_shim(CPU *c, const char *name) {
         else if (!strcmp(name, "__wcstombs_chk")) need = rt_arg32(c, 0) ? rt_arg32(c, 2) : 0;
         else if (!strcmp(name, "__wcsncat_chk")) {
             uint32_t limit = rt_arg32(c, 2), src = rt_arg32(c, 1), add = 0;
-            while (add < limit && R32(src + 4 * add)) ++add;
+            if (limit && !src) rt_trap(c, c->eip, "null guest wide string");
+            while (add < limit) {
+                if ((uint64_t)src + 4 * (uint64_t)add + 3 > UINT32_MAX) rt_trap(c, c->eip, "unterminated guest wide string");
+                if (!R32(src + 4 * add)) break;
+                ++add;
+            }
             need = (uint64_t)wlen(c, rt_arg32(c, 0)) + add + 1;
         } else {
             need = (uint64_t)wlen(c, rt_arg32(c, 0)) + wlen(c, rt_arg32(c, 1)) + 1;

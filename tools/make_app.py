@@ -298,9 +298,10 @@ def build_app(app, binary, prep, config, paths, game_args, *, map_compiler=True)
     icon = paths['game_dir'] / game['icon']
     if icon.exists():
         target_icon = resources / 'portal2.icns'
-        if icon.suffix.lower() == '.ico' and shutil.which('sips'):
-            subprocess.run(['sips', '-s', 'format', 'icns', str(icon), '--out', str(target_icon)],
-                           capture_output=True)
+        if icon.suffix.lower() == '.ico':
+            if shutil.which('sips'):
+                subprocess.run(['sips', '-s', 'format', 'icns', str(icon), '--out', str(target_icon)],
+                               capture_output=True)
         else:
             shutil.copy(icon, target_icon)
     plist = {

@@ -713,14 +713,16 @@ const void *d3d9_shader(CPU *c, uint32_t guest) {
 // recopiés au format de 8 octets ; GetDeclaration rend alors ce même format.
 static _Atomic int decl_word32;
 static _Thread_local uint8_t decl_copy[65 * 8];
-const void *d3d9_decl(CPU *c, uint32_t guest) {
-    if (!guest) return NULL;
+static const void *scan_decl8(CPU *c, uint32_t guest) {
     for (uint32_t i = 0; i <= 64; ++i) {
         if (R16(guest + 8 * i) == 0xff && R16(guest + 8 * i + 2) == 0 && R8(guest + 8 * i + 4) == 17) {
             decl_word32 = 0;
             return rt_span(c, guest, 8ull * (i + 1));
         }
     }
+    return NULL;
+}
+static const void *scan_decl12(CPU *c, uint32_t guest) {
     for (uint32_t i = 0; i <= 64; ++i) {
         if (R32(guest + 12 * i) != 0xff || R32(guest + 12 * i + 4) != 0 || R8(guest + 12 * i + 8) != 17) continue;
         rt_span(c, guest, 12ull * (i + 1));
@@ -734,6 +736,13 @@ const void *d3d9_decl(CPU *c, uint32_t guest) {
         decl_word32 = 1;
         return decl_copy;
     }
+    return NULL;
+}
+const void *d3d9_decl(CPU *c, uint32_t guest) {
+    if (!guest) return NULL;
+    const void *result = decl_word32 ? scan_decl12(c, guest) : scan_decl8(c, guest);
+    if (!result) result = decl_word32 ? scan_decl8(c, guest) : scan_decl12(c, guest);
+    if (result) return result;
     rt_trapf(c, "D3D9 bridge: vertex declaration at %#x has no D3DDECL_END", guest);
 }
 // RGNDATA : en-tête de 32 octets (nCount en +8) puis nCount RECT.

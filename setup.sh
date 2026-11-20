@@ -463,7 +463,7 @@ DEBIAN_LIBGCC_DEB="libgcc-s1_10.2.1-6_i386.deb"
 DEBIAN_LIBGCC_SHA256="0a52edec5d626f8d9acf1998248d276760aff3950f44a308d27d4a2a488fe18d"
 SYSTEM_LIB_DIR=""
 fetch_debian_i386() {
-    local c dest deb sha url got t found
+    local c dest deb deb_path sha url got t found spec
     for c in "$(config_get mel system_lib_dir)" "$REPO/../work/downloads/debian-i386/lib" "$DEPS/debian-i386/lib"; do
         if [ -n "$c" ] && [ -f "$c/libstdc++.so.6" ] && [ -f "$c/libgcc_s.so.1" ]; then
             SYSTEM_LIB_DIR="$c"
@@ -479,11 +479,15 @@ fetch_debian_i386() {
         "$DEBIAN_LIBGCC_DEB:$DEBIAN_LIBGCC_SHA256:libgcc_s.so.1"; do
         deb="${spec%%:*}"; spec="${spec#*:}"; sha="${spec%%:*}"; lib="${spec#*:}"
         url="$DEBIAN_GCC10_URL/$deb"
-        [ -f "$DEPS/debian-i386/$deb" ] || curl -fsSL --retry 3 -o "$DEPS/debian-i386/$deb" "$url"
-        got=$(shasum -a 256 "$DEPS/debian-i386/$deb" | cut -d' ' -f1)
-        [ "$got" = "$sha" ] || die "$DEPS/debian-i386/$deb: SHA-256 $got, expected $sha (delete it and re-run)"
+        deb_path="$(cd "$DEPS/debian-i386" && pwd)/$deb"
+        if [ ! -f "$deb_path" ]; then
+            curl -fsSL --retry 3 -o "$deb_path.part" "$url" && mv "$deb_path.part" "$deb_path" \
+                || { rm -f "$deb_path.part"; die "could not download $url"; }
+        fi
+        got=$(shasum -a 256 "$deb_path" | cut -d' ' -f1)
+        [ "$got" = "$sha" ] || die "$deb_path: SHA-256 $got, expected $sha (delete it and re-run)"
         t=$(mktemp -d)
-        (cd "$t" && ar x "$DEPS/debian-i386/$deb" && tar -xf data.tar.*)
+        (cd "$t" && ar x "$deb_path" && tar -xf data.tar.*)
         found=$(find "$t" -name "$lib" \( -type f -o -type l \) | head -1)
         [ -n "$found" ] || { rm -rf "$t"; die "$lib not found in $deb"; }
         cp -L "$found" "$dest/$lib"

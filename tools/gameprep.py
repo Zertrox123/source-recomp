@@ -25,7 +25,10 @@ def plan(config, tool=None):
     for name in game.get('system_libs', ()):
         if not config.get('system_lib_dir'):
             raise ValueError(f'{game["name"]} needs {name}: no system_lib_dir in the config (run ./setup.sh --game {game["name"]})')
-        paths.append(Path(config['system_lib_dir']) / name)
+        lib = Path(config['system_lib_dir']).expanduser() / name
+        if not lib.is_file():
+            raise ValueError(f'{game["name"]} needs {lib} (run ./setup.sh --game {game["name"]})')
+        paths.append(lib)
     # Excluded modules (tools, DXVK...): see tools/games.py.
     excluded = set(game['excluded'])
     if tool:
